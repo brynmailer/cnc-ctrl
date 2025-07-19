@@ -145,7 +145,7 @@ def concentric_path():
     concentric_coords = offset_shape(coords, 5)
     np.savetxt("concentric.csv", concentric_coords, delimiter=',')
 
-def shell_probe(ser):
+def shell_probe(ser: Serial):
     coords = np.loadtxt("base.csv", delimiter=',')
     concentric_coords = np.loadtxt("concentric.csv", delimiter=',')
     directions = concentric_directions(coords, concentric_coords)
@@ -156,7 +156,7 @@ def shell_probe(ser):
         probe_direction(directions[i], ser, current_coordinates)
         send_gcode([f"G1 X{coords[i][0]} Y{coords[i][1]} F5000"], ser)
 
-def tank_center(ser):
+def tank_center(ser: Serial):
     tank_coords = np.zeros((4, 2))
     for i in range(len(tank_directions)):
         tank_coords[i] = probe_direction(tank_directions[i], ser, np.array([0, 0]))
@@ -166,32 +166,27 @@ def tank_center(ser):
     send_gcode([f"G10 L20 P1 X{339 + center[0]} Y{-744.735 + center[1]}", "G1 X0 Y0 F5000"], ser)
     
 
-# Example G-Code commands
-startup = [
+# Initialization routine
+init = [
     "$H",
-    "$X",           # Unlock alarm state (if present)
-    "G21",          # Set units to mm
-    "G90",          # Absolute positioning   ; Rapid move
-    "G1 Z0 F1000",
-    "G10 L20 P1 X339 Y-744.735",
+    "$X",                           # Unlock alarm state (if present)
+    "G21",                          # Set units to mm
+    "G90",                          # Absolute positioning  ; Rapid move
+    "G1 Z0 F1000",                  # Reset Z axis
+    "G10 L20 P1 X339 Y-744.735",    # Set work coords to this offset from machine coords
     "G1 X0 Y0 F5000",
-    #"M3 S1000",     # Spindle on at 1000 RPM
+    #"M3 S1000",                    # Spindle on at 1000 RPM
     "G1 Z-60 F1000",
-    #"G4 P2",        # Pause for 2 seconds
-    #"M5",           # Spindle off
+    #"G4 P2",                       # Pause for 2 seconds
+    #"M5",                          # Spindle off
 ]
 
-# Execute
 try:
-    # Open connection
     with Serial(PORT, BAUDRATE, timeout=TIMEOUT) as ser:
         print(f"Connected to {ser.name}")
-        send_gcode(startup, ser)
-        #circle_probe(12, ser)
-        #shell_probe(ser)
+        send_gcode(init, ser)
         tank_center(ser)
 except SerialException as e:
     print(f"Serial error: {e}")
 except KeyboardInterrupt:
     print("\nOperation cancelled.")
-#concentric_path()
