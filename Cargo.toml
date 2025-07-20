@@ -1,0 +1,9 @@
+[package]
+name = "probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serialport = "4.2"
+rppal = "0.14"
+tokio = { version = "1.0", features = ["full"] }
