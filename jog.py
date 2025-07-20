@@ -32,31 +32,29 @@ def send(gcode: list[str], serial: Serial):
     verbose = True
     for command in gcode:
         l_count += 1 # Iterate line counter
-        # l_block = re.sub('\s|\(.*?\)','',command).upper() # Strip comments/spaces/new line and capitalize
         l_block = command.strip()
         c_line.append(len(l_block) + 1) # Track number of characters in grbl serial read buffer
-        grbl_out = '' 
-        while sum(c_line) >= RX_BUFFER_SIZE-1 or serial.inWaiting() :
+        while sum(c_line) >= RX_BUFFER_SIZE - 1 or serial.in_waiting:
             out_temp = serial.readline().strip().decode() # Wait for grbl response
             if out_temp.find('ok') < 0 and out_temp.find('error') < 0 :
                 print("    MSG: \"" + out_temp + "\"") # Debug response
             else :
                 if out_temp.find('error') >= 0 : error_count += 1
                 g_count += 1 # Iterate g-code counter
-                if verbose: print("  REC<"+str(g_count)+": \""+out_temp+"\"")
+                if verbose: print("  REC<" + str(g_count) + ": \"" + out_temp + "\"")
                 del c_line[0] # Delete the block character count corresponding to the last 'ok'
         serial.write((l_block + '\n').encode()) # Send g-code block to grbl
-        if verbose: print("SND>"+str(l_count)+": \"" + l_block + "\"")
+        if verbose: print("SND>" + str(l_count) + ": \"" + l_block + "\"")
     # Wait until all responses have been received.
     while l_count > g_count :
         out_temp = serial.readline().strip().decode() # Wait for grbl response
         if out_temp.find('ok') < 0 and out_temp.find('error') < 0 :
-            print("    MSG: \""+out_temp+"\"") # Debug response
+            print("    MSG: \"" + out_temp + "\"") # Debug response
         else :
             if out_temp.find('error') >= 0 : error_count += 1
             g_count += 1 # Iterate g-code counter
             del c_line[0] # Delete the block character count corresponding to the last 'ok'
-            if verbose: print("  REC<"+str(g_count)+": \""+out_temp + "\"")
+            if verbose: print("  REC<" + str(g_count) + ": \"" + out_temp + "\"")
 
 # Initialization routine
 init = [
