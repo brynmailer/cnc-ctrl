@@ -69,6 +69,7 @@ try:
     with Serial(PORT, BAUDRATE, timeout=TIMEOUT) as serial:
         print(f"Connected to {serial.name}")
         send(init, serial)
+        serial.close()
 except SerialException as err:
     print(f"Serial error: {err}")
 except KeyboardInterrupt:
