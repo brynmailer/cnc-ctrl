@@ -172,9 +172,9 @@ init = [
     "$X",                           # Unlock alarm state (if present)
     "G21",                          # Set units to mm
     "G90",                          # Absolute positioning  ; Rapid move
-    "G1 Z0 F1000",                  # Reset Z axis
+    "G1 Z0 F1000",                  # Reset Z
     "G10 L20 P1 X339 Y-744.735",    # Set work coords to this offset from machine coords
-    "G1 X0 Y0 F5000",
+    "G1 X0 Y0 F5000",               # Reset X Y
     #"M3 S1000",                    # Spindle on at 1000 RPM
     "G1 Z-60 F1000",
     #"G4 P2",                       # Pause for 2 seconds
