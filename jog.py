@@ -20,10 +20,10 @@ bounds = np.array([375, 635])
 xy_limit = Button(17)
 
 
-def send_gcode(gcode_commands: list[str], ser: Serial):
+def send_gcode(gcode_commands: list[str], serial: Serial):
     # Flush startup messages (GRBL version, settings, etc.)
     #time.sleep(2)
-    ser.reset_input_buffer()
+    serial.reset_input_buffer()
     
     # Send commands line-by-line
     for command in gcode_commands:
@@ -33,15 +33,15 @@ def send_gcode(gcode_commands: list[str], ser: Serial):
             continue
 
         # Send command
-        ser.write((stripped_cmd + '\n').encode())
+        serial.write((stripped_cmd + '\n').encode())
         print(f"Sent: {stripped_cmd}")
 
         # Wait for response (blocking)
-        response = ser.readline().decode().strip()
+        response = serial.readline().decode().strip()
         while 'ok' not in response and 'error' not in response:
             if response:  # Print non-empty intermediate messages
                 print(f"Received: {response}")
-            response = ser.readline().decode().strip()
+            response = serial.readline().decode().strip()
 
         print(f"Response: {response}")  # Show final "ok" or "error"
 
@@ -50,6 +50,7 @@ def send_gcode(gcode_commands: list[str], ser: Serial):
 # Initialization routine
 init = [
     "$X",                           # Unlock alarm state (if present)
+    "$25=2500",
     "$H",                           # Execute home cycle
     "G91",                          # Switch to incremental positioning mode
     "$J=X-280 Y750 F2500",
