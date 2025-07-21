@@ -139,12 +139,6 @@ impl Controller {
             "$J=Y-750 F1500",
         ])?;
 
-        println!("\nWARNING: Wait until Grbl completes buffered g-code blocks before exiting.");
-        println!("  Press <Enter> to exit and disable Grbl.");
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
         Ok(())
     }
 }
