@@ -1,9 +1,8 @@
 [package]
-name = "probe"
+name = "cnc"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-serialport = "4.2"
-rppal = "0.14"
-tokio = { version = "1.0", features = ["full"] }
+rppal = "0.22.1"
+serialport = "4.7.2"

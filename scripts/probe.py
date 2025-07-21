@@ -18,7 +18,7 @@ VERBOSE = True
 
 
 
-switch = Button(17)
+switch = Button(pin=17)
 
 
 

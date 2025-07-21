@@ -1,14 +1,13 @@
-use rppal::gpio::{Gpio, InputPin, Trigger};
-use serialport::{SerialPort, SerialPortBuilder};
+use rppal::gpio::{Gpio, InputPin};
+use serialport::SerialPort;
 use std::io::{self, Write};
-use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 // Serial configuration
 const PORT: &str = "/dev/ttyUSB0";
 const BAUDRATE: u32 = 115200;
-const TIMEOUT_MS: u64 = 60000; // 60 seconds in milliseconds
+const TIMEOUT_MS: u64 = 60000; // 60 seconds
 
 // Grbl configuration
 const RX_BUFFER_SIZE: usize = 128;
@@ -17,7 +16,7 @@ const RX_BUFFER_SIZE: usize = 128;
 const VERBOSE: bool = true;
 
 // GPIO configuration
-const SWITCH_PIN: u8 = 17;
+const SWITCH_PIN: u8 = 27;
 
 struct ProbeController {
     serial: Box<dyn SerialPort>,
@@ -27,8 +26,7 @@ struct ProbeController {
 impl ProbeController {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         // Initialize serial port
-        let serial = SerialPortBuilder::new(PORT)
-            .baud_rate(BAUDRATE)
+        let serial = serialport::new(PORT, BAUDRATE)
             .timeout(Duration::from_millis(TIMEOUT_MS))
             .open()?;
 
@@ -51,11 +49,15 @@ impl ProbeController {
             c_line.push(l_block.len() + 1);
 
             // Wait for buffer space or incoming data
-            while c_line.iter().sum::<usize>() >= RX_BUFFER_SIZE - 1 || self.serial.bytes_to_read()? > 0 {
+            while c_line.iter().sum::<usize>() >= RX_BUFFER_SIZE - 1
+                || self.serial.bytes_to_read()? > 0
+            {
                 let mut buffer = vec![0; 256];
                 let bytes_read = self.serial.read(&mut buffer)?;
-                let response = String::from_utf8_lossy(&buffer[..bytes_read]).trim().to_string();
-                
+                let response = String::from_utf8_lossy(&buffer[..bytes_read])
+                    .trim()
+                    .to_string();
+
                 if !response.contains("ok") && !response.contains("error") {
                     println!("    MSG: \"{}\"", response);
                 } else {
@@ -84,8 +86,10 @@ impl ProbeController {
         while l_count > g_count {
             let mut buffer = vec![0; 256];
             let bytes_read = self.serial.read(&mut buffer)?;
-            let response = String::from_utf8_lossy(&buffer[..bytes_read]).trim().to_string();
-            
+            let response = String::from_utf8_lossy(&buffer[..bytes_read])
+                .trim()
+                .to_string();
+
             if !response.contains("ok") && !response.contains("error") {
                 println!("    MSG: \"{}\"", response);
             } else {
@@ -105,66 +109,37 @@ impl ProbeController {
         Ok(())
     }
 
-    fn handle_switch_interrupt(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Send feed hold command (0x85 = '!')
-        self.serial.write_all(&[0x85])?;
-        Ok(())
-    }
-
     fn initialize_grbl(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         println!("Initializing Grbl...");
-        
+
         // Wake up grbl
         self.serial.write_all(b"\r\n\r\n")?;
-        
+
         // Wait for grbl to initialize
         thread::sleep(Duration::from_secs(2));
-        
+
         // Clear input buffer
         self.serial.clear(serialport::ClearBuffer::Input)?;
-        
+
         Ok(())
     }
 
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.initialize_grbl()?;
 
-        // Set up switch interrupt handling
-        let (tx, rx) = mpsc::channel();
-        let mut switch_pin = self.switch.clone();
-        
-        thread::spawn(move || {
-            switch_pin.set_interrupt(Trigger::RisingEdge).unwrap();
-            loop {
-                if switch_pin.poll_interrupt(false, None).unwrap().is_some() {
-                    tx.send(()).unwrap();
-                }
-            }
-        });
-
-        // Handle switch interrupts in main thread
-        let switch_handler = thread::spawn({
-            let mut serial_clone = self.serial.try_clone()?;
-            move || {
-                while rx.recv().is_ok() {
-                    let _ = serial_clone.write_all(&[0x85]);
-                }
-            }
-        });
-
         // Send initialization commands
         self.send_gcode(vec![
-            "$X",                           // Unlock alarm state (if present)
-            "$25=2500",                     // Set home cycle feed speed
-            "$H",                           // Execute home cycle
-            "G91",                          // Switch to incremental positioning mode
-            "$J=X-280 Y750 F3000",          // Jog to rough center of tank
+            "$X",                  // Unlock alarm state (if present)
+            "$25=2500",            // Set home cycle feed speed
+            "$H",                  // Execute home cycle
+            "G91",                 // Switch to incremental positioning mode
+            "$J=X-280 Y750 F3000", // Jog to rough center of tank
             "$J=Y-750 F1500",
         ])?;
 
         println!("\nWARNING: Wait until Grbl completes buffered g-code blocks before exiting.");
         println!("  Press <Enter> to exit and disable Grbl.");
-        
+
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
 
