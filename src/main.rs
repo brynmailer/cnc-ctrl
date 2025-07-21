@@ -41,7 +41,7 @@ impl Controller {
 
         for line in gcode {
             sent_count += 1;
-            bytes_written.push_back(line.len());
+            bytes_written.push_back(line.len() + 1); // Plus 1 for newline
 
             // Wait for buffer space
             while bytes_written.iter().sum::<usize>() >= RX_BUFFER_SIZE {
@@ -107,11 +107,14 @@ impl Controller {
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.initialize_grbl()?;
 
+        let mut serial_clone = self.serial.try_clone()?;
+
         self.switch.set_async_interrupt(
             Trigger::RisingEdge,
             Some(Duration::from_millis(100)),
-            |_| {
+            move |_| {
                 println!("BTN: Pressed");
+                let _ = serial_clone.write_all(&[0x85]);
             },
         )?;
 
@@ -122,7 +125,7 @@ impl Controller {
             "$H",                  // Execute home cycle
             "G91",                 // Switch to incremental positioning mode
             "$J=X-280 Y750 F3000", // Jog to rough center of tank
-            "$J=Y-750 F1500",
+            "$J=Y-2 F1500",
         ])?;
 
         Ok(())
