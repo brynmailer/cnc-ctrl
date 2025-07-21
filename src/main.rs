@@ -1,22 +1,15 @@
 use rppal::gpio::{Gpio, InputPin, Trigger};
 use serialport::{self, SerialPort};
 
-use std::io::Write;
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::thread;
 use std::time::Duration;
 
-// Serial configuration
 const PORT: &str = "/dev/ttyUSB0";
 const BAUDRATE: u32 = 115200;
 const TIMEOUT_MS: u64 = 60000; // 60 seconds
-
-// Grbl configuration
 const RX_BUFFER_SIZE: usize = 128;
-
-// Logging
-const VERBOSE: bool = true;
-
-// GPIO configuration
 const SWITCH_PIN: u8 = 27;
 
 struct Controller {
@@ -33,77 +26,61 @@ impl Controller {
 
         // Initialize GPIO
         let gpio = Gpio::new()?;
-        let switch = gpio.get(SWITCH_PIN)?.into_input();
+        let switch = gpio.get(SWITCH_PIN)?.into_input_pullup();
 
         Ok(Controller { serial, switch })
     }
 
-    fn send_gcode(&mut self, commands: Vec<&str>) -> Result<(), Box<dyn std::error::Error>> {
-        let mut l_count = 0;
-        let mut g_count = 0;
-        let mut c_line = Vec::new();
-        let mut error_count = 0;
+    fn execute(&mut self, gcode: Vec<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        let mut sent_count = 0;
+        let mut received_count = 0;
+        let mut bytes_written = VecDeque::new();
 
-        for command in commands {
-            l_count += 1;
-            let l_block = command.trim();
-            c_line.push(l_block.len() + 1);
+        let mut reader = BufReader::new(self.serial.try_clone()?);
+        let mut writer = BufWriter::new(self.serial.try_clone()?);
 
-            // Wait for buffer space or incoming data
-            while c_line.iter().sum::<usize>() >= RX_BUFFER_SIZE - 1
-                || self.serial.bytes_to_read()? > 0
-            {
-                let mut buffer = vec![0; 256];
-                let bytes_read = self.serial.read(&mut buffer)?;
-                let response = String::from_utf8_lossy(&buffer[..bytes_read])
-                    .trim()
-                    .to_string();
+        for line in gcode {
+            sent_count += 1;
+            bytes_written.push_back(line.len());
 
-                if !response.contains("ok") && !response.contains("error") {
-                    println!("    MSG: \"{}\"", response);
+            // Wait for buffer space
+            while bytes_written.iter().sum::<usize>() >= RX_BUFFER_SIZE {
+                let mut res = String::new();
+                reader.read_line(&mut res)?;
+                res = res.trim().to_string();
+
+                if !res.contains("ok") && !res.contains("error") {
+                    println!("    MSG: \"{}\"", res);
                 } else {
-                    if response.contains("error") {
-                        error_count += 1;
-                    }
-                    g_count += 1;
-                    if VERBOSE {
-                        println!("  REC<{}: \"{}\"", g_count, response);
-                    }
-                    if !c_line.is_empty() {
-                        c_line.remove(0);
+                    received_count += 1;
+                    println!("  REC<{}: \"{}\"", received_count, res);
+
+                    if !bytes_written.is_empty() {
+                        bytes_written.pop_front();
                     }
                 }
             }
 
             // Send command
-            let command_with_newline = format!("{}\n", l_block);
-            self.serial.write_all(command_with_newline.as_bytes())?;
-            if VERBOSE {
-                println!("SND>{}: \"{}\"", l_count, l_block);
-            }
+            writer.write_all(format!("{}\n", line).as_bytes())?;
+            writer.flush()?;
+            println!("SND>{}: \"{}\"", sent_count, line);
         }
 
-        // Wait for all responses
-        while l_count > g_count {
-            let mut buffer = vec![0; 256];
-            let bytes_read = self.serial.read(&mut buffer)?;
-            let response = String::from_utf8_lossy(&buffer[..bytes_read])
-                .trim()
-                .to_string();
+        // Wait for remaining responses
+        while sent_count > received_count {
+            let mut res = String::new();
+            reader.read_line(&mut res)?;
+            res = res.trim().to_string();
 
-            println!("{response}");
-            if !response.contains("ok") && !response.contains("error") {
-                println!("    MSG: \"{}\"", response);
+            if !res.contains("ok") && !res.contains("error") {
+                println!("    MSG: \"{}\"", res);
             } else {
-                if response.contains("error") {
-                    error_count += 1;
-                }
-                g_count += 1;
-                if !c_line.is_empty() {
-                    c_line.remove(0);
-                }
-                if VERBOSE {
-                    println!("  REC<{}: \"{}\"", g_count, response);
+                received_count += 1;
+                println!("  REC<{}: \"{}\"", received_count, res);
+
+                if !bytes_written.is_empty() {
+                    bytes_written.pop_front();
                 }
             }
         }
@@ -112,7 +89,7 @@ impl Controller {
     }
 
     fn initialize_grbl(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        println!("Initializing Grbl...");
+        println!("INIT: Started");
 
         // Wake up grbl
         self.serial.write_all(b"\r\n\r\n")?;
@@ -123,6 +100,7 @@ impl Controller {
         // Clear input buffer
         self.serial.clear(serialport::ClearBuffer::Input)?;
 
+        println!("INIT: Complete");
         Ok(())
     }
 
@@ -131,12 +109,14 @@ impl Controller {
 
         self.switch.set_async_interrupt(
             Trigger::RisingEdge,
-            Some(Duration::from_millis(500)),
-            |_| println!("Pressed!"),
+            Some(Duration::from_millis(100)),
+            |_| {
+                println!("BTN: Pressed");
+            },
         )?;
 
         // Send initialization commands
-        self.send_gcode(vec![
+        self.execute(vec![
             "$X",                  // Unlock alarm state (if present)
             "$25=2500",            // Set home cycle feed speed
             "$H",                  // Execute home cycle
