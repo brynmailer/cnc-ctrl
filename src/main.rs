@@ -1,7 +1,7 @@
-use rppal::gpio::{Gpio, InputPin};
+use rppal::gpio::{Gpio, InputPin, Trigger};
 use serialport::{self, SerialPort};
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::thread;
 use std::time::Duration;
 
@@ -128,6 +128,12 @@ impl Controller {
 
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.initialize_grbl()?;
+
+        self.switch.set_async_interrupt(
+            Trigger::RisingEdge,
+            Some(Duration::from_millis(500)),
+            |_| println!("Pressed!"),
+        )?;
 
         // Send initialization commands
         self.send_gcode(vec![
