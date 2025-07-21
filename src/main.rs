@@ -1,5 +1,6 @@
 use rppal::gpio::{Gpio, InputPin};
-use serialport::SerialPort;
+use serialport::{self, SerialPort};
+
 use std::io::{self, Write};
 use std::thread;
 use std::time::Duration;
@@ -18,12 +19,12 @@ const VERBOSE: bool = true;
 // GPIO configuration
 const SWITCH_PIN: u8 = 27;
 
-struct ProbeController {
+struct Controller {
     serial: Box<dyn SerialPort>,
     switch: InputPin,
 }
 
-impl ProbeController {
+impl Controller {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         // Initialize serial port
         let serial = serialport::new(PORT, BAUDRATE)
@@ -34,7 +35,7 @@ impl ProbeController {
         let gpio = Gpio::new()?;
         let switch = gpio.get(SWITCH_PIN)?.into_input();
 
-        Ok(ProbeController { serial, switch })
+        Ok(Controller { serial, switch })
     }
 
     fn send_gcode(&mut self, commands: Vec<&str>) -> Result<(), Box<dyn std::error::Error>> {
@@ -90,6 +91,7 @@ impl ProbeController {
                 .trim()
                 .to_string();
 
+            println!("{response}");
             if !response.contains("ok") && !response.contains("error") {
                 println!("    MSG: \"{}\"", response);
             } else {
@@ -148,7 +150,7 @@ impl ProbeController {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut controller = ProbeController::new()?;
+    let mut controller = Controller::new()?;
     controller.run()?;
     Ok(())
 }
