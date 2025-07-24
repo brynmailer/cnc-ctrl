@@ -1,10 +1,11 @@
+use regex::Regex;
 use rppal::gpio::{Gpio, Trigger};
-use serialport::{Error as SerialError, SerialPort};
+use serialport::SerialPort;
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::thread;
 use std::time::Duration;
+use std::{fmt, thread};
 
 // Serial
 const PORT: &str = "/dev/ttyUSB0";
@@ -25,14 +26,68 @@ struct Controller {
     bytes_queued: VecDeque<usize>,
 }
 
-fn stream_buffered(controller: &mut Controller, gcode: Vec<&str>) -> Result<(), SerialError> {
+#[derive(Debug)]
+enum Status {
+    Idle,
+    Home,
+    Jog,
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status_string = match self {
+            Status::Idle => "Idle",
+            Status::Home => "Home",
+            Status::Jog => "Jog",
+        };
+        write!(f, "{}", status_string)
+    }
+}
+
+fn wait_for_status(
+    controller: &mut Controller,
+    status: Status,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut writer = BufWriter::new(controller.serial.try_clone()?);
     let mut reader = BufReader::new(controller.serial.try_clone()?);
+    let re = Regex::new(r"<([^|>]+)")?;
 
-    for line in gcode {
-        controller.bytes_queued.push_back(line.len() + 1); // Additional byte for newline char
+    loop {
+        writer.write_all("?".as_bytes())?;
+        writer.flush()?;
 
-        // Wait for buffer space
+        let mut res = String::new();
+        reader.read_line(&mut res)?;
+        res = res.trim().to_string();
+
+        if let Some(captures) = re.captures(&res) {
+            if captures[1] == status.to_string() {
+                return Ok(());
+            }
+        }
+
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn buffered_stream(
+    controller: &mut Controller,
+    gcode: Vec<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut writer = BufWriter::new(controller.serial.try_clone()?);
+    let mut reader = BufReader::new(controller.serial.try_clone()?);
+    let re = Regex::new(r"^IN$J=")?;
+
+    for raw_line in gcode {
+        let interruptible = re.is_match(raw_line);
+        let line = if interruptible {
+            format!("{}\n", &raw_line[2..])
+        } else {
+            format!("{}\n", raw_line)
+        };
+
+        controller.bytes_queued.push_back(line.len());
+
         while controller.bytes_queued.iter().sum::<usize>() >= RX_BUFFER_SIZE {
             let mut res = String::new();
             reader.read_line(&mut res)?;
@@ -50,14 +105,21 @@ fn stream_buffered(controller: &mut Controller, gcode: Vec<&str>) -> Result<(), 
             }
         }
 
-        // Send command
-        writer.write_all(format!("{}\n", line).as_bytes())?;
+        writer.write_all(line.as_bytes())?;
         writer.flush()?;
         controller.sent_count += 1;
-        println!("SND>{}: \"{}\"", controller.sent_count, line);
+        println!(
+            "SND>{}: {}\"{}\"",
+            controller.sent_count,
+            interruptible.then(|| "IN-").unwrap_or(""),
+            line
+        );
+
+        if interruptible {
+            wait_for_status(controller, Status::Idle)?;
+        }
     }
 
-    // Wait for remaining responses
     while controller.sent_count > controller.received_count {
         let mut res = String::new();
         reader.read_line(&mut res)?;
@@ -82,7 +144,10 @@ fn main() {
     let serial = serialport::new(PORT, BAUDRATE)
         .timeout(Duration::from_millis(TIMEOUT_MS))
         .open()
-        .expect("SERIAL: Failed to open connection");
+        .expect("Failed to open serial connection!");
+    let mut serial_clone = serial
+        .try_clone()
+        .expect("Failed to clone serial connection!");
 
     let mut controller = Controller {
         serial,
@@ -91,53 +156,65 @@ fn main() {
         bytes_queued: VecDeque::new(),
     };
 
-    let gpio = Gpio::new().expect("GPIO: Failed to intialize");
+    let gpio = Gpio::new().expect("Failed to intialize GPIO!");
     let mut button = gpio
         .get(BUTTON_PIN)
-        .expect("GPIO: Failed to initialize button")
+        .expect("Failed to initialize button!")
         .into_input_pullup();
     let mut probe = gpio
         .get(PROBE_PIN)
-        .expect("GPIO: Failed to initialize probe")
+        .expect("Failed to initialize probe!")
         .into_input_pullup();
 
     button
         .set_interrupt(Trigger::RisingEdge, Some(Duration::from_millis(30)))
-        .expect("GPIO: Failed to initialize probe interrupt");
+        .expect("Failed to initialize probe interrupt!");
     probe
         .set_async_interrupt(
             Trigger::RisingEdge,
             Some(Duration::from_millis(30)),
             move |_| {
-                println!("GPIO: Probe interrupt triggered");
+                println!("Probe interrupt triggered! Sending jog cancel command");
+                serial_clone
+                    .write_all(&[0x85])
+                    .expect("Serial write failed!");
             },
         )
-        .expect("GPIO: Failed to initialize probe interrupt");
+        .expect("Failed to initialize probe interrupt!");
 
     loop {
+        println!("Waiting for start signal...");
         button
             .poll_interrupt(true, None)
-            .expect("GPIO: Failed to poll button interrupt");
+            .expect("Failed to poll button interrupt!");
 
-        println!("SERIAL: Waking up Grbl");
+        println!("Beginning execution");
+
+        println!("Waking up Grbl");
         controller
             .serial
             .write_all(b"\n\n")
-            .expect("SERIAL: Write failed");
+            .expect("Serial write failed!");
         thread::sleep(Duration::from_secs(2));
         controller
             .serial
             .clear(serialport::ClearBuffer::Input)
-            .expect("SERIAL: Failed to clear input buffer");
+            .expect("Failed to clear serial input buffer!");
 
         let gcode = vec![
-            "$X",                  // Unlock alarm state (if present)
-            "$25=2500",            // Set home cycle feed speed
-            "$H",                  // Execute home cycle
-            "G91",                 // Switch to incremental positioning mode
-            "$J=X-280 Y750 F3000", // Jog to rough center of tank
+            "$X",                    // Unlock alarm state (if present)
+            "$25=2500",              // Set home cycle feed speed
+            "$H",                    // Execute home cycle
+            "G91",                   // Switch to incremental positioning mode
+            "IN$J=X-280 Y750 F1500", // Jog to rough center of tank
+            "IN$J=Y-750 F1500",
+            "IN$J=Y750 F1500",
         ];
 
-        stream_buffered(&mut controller, gcode).expect("SERIAL: Failed to stream G-code");
+        buffered_stream(&mut controller, gcode).expect("Failed to stream G-code!");
+
+        wait_for_status(&mut controller, Status::Idle).expect("Failed to wait for Idle status!");
+
+        println!("Execution complete!");
     }
 }
