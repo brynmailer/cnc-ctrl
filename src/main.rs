@@ -66,7 +66,7 @@ fn wait_for_status(
             }
         }
 
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(250));
     }
 }
 
@@ -76,14 +76,14 @@ fn buffered_stream(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut writer = BufWriter::new(controller.serial.try_clone()?);
     let mut reader = BufReader::new(controller.serial.try_clone()?);
-    let re = Regex::new(r"^IN$J=")?;
+    let re = Regex::new(r"^IN\$J=")?;
 
     for raw_line in gcode {
         let interruptible = re.is_match(raw_line);
         let line = if interruptible {
-            format!("{}\n", &raw_line[2..])
+            &raw_line[2..]
         } else {
-            format!("{}\n", raw_line)
+            raw_line
         };
 
         controller.bytes_queued.push_back(line.len());
@@ -105,18 +105,20 @@ fn buffered_stream(
             }
         }
 
-        writer.write_all(line.as_bytes())?;
+        writer.write_all(format!("{}\n", line).as_bytes())?;
         writer.flush()?;
         controller.sent_count += 1;
         println!(
-            "SND>{}: {}\"{}\"",
+            "SND{}>{}: \"{}\"",
+            interruptible.then(|| "-IN").unwrap_or(""),
             controller.sent_count,
-            interruptible.then(|| "IN-").unwrap_or(""),
             line
         );
 
         if interruptible {
             wait_for_status(controller, Status::Idle)?;
+            controller.received_count += 1;
+            println!("  Proceeding");
         }
     }
 
@@ -206,9 +208,22 @@ fn main() {
             "$25=2500",              // Set home cycle feed speed
             "$H",                    // Execute home cycle
             "G91",                   // Switch to incremental positioning mode
-            "IN$J=X-280 Y750 F1500", // Jog to rough center of tank
-            "IN$J=Y-750 F1500",
-            "IN$J=Y750 F1500",
+            "IN$J=X-280 Y950 F1500", // End of tank
+            "IN$J=Y-950 F1500",
+            "IN$J=Y950 F1500",
+            /*
+                        "IN$J=X-400 F1500",    // 1st point
+                        "$J=X400 F1500",
+                        "IN$J=Y400 F1500", // 2nd point
+                        "$J=Y-400 F1500",
+                        "IN$J=X400 F1500", // 3rd point
+                        "$J=X-400 F1500",
+                        "$J=Y-300 F1500",   // Step away from end
+                        "IN$J=X-400 F1500", // 4th point
+                        "$J=X400 F1500",
+                        "IN$J=X400 F1500", // 5th point
+                        "$J=X-400 F1500",
+            */
         ];
 
         buffered_stream(&mut controller, gcode).expect("Failed to stream G-code!");
