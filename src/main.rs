@@ -1,11 +1,16 @@
+mod controller;
+
 use regex::Regex;
 use rppal::gpio::{Gpio, Trigger};
 use serialport::SerialPort;
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::sync::{Arc, RwLock, mpsc};
+use std::thread;
 use std::time::Duration;
-use std::{fmt, thread};
+
+use controller::Controller;
 
 // Serial
 const PORT: &str = "/dev/ttyUSB0";
@@ -18,31 +23,6 @@ const PROBE_PIN: u8 = 27;
 
 // GbrlHAL
 const RX_BUFFER_SIZE: usize = 1024;
-
-struct Controller {
-    serial: Box<dyn SerialPort>,
-    sent_count: usize,
-    received_count: usize,
-    bytes_queued: VecDeque<usize>,
-}
-
-#[derive(Debug)]
-enum Status {
-    Idle,
-    Home,
-    Jog,
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let status_string = match self {
-            Status::Idle => "Idle",
-            Status::Home => "Home",
-            Status::Jog => "Jog",
-        };
-        write!(f, "{}", status_string)
-    }
-}
 
 fn wait_for_status(
     controller: &mut Controller,
@@ -66,80 +46,8 @@ fn wait_for_status(
             }
         }
 
-        thread::sleep(Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(200));
     }
-}
-
-fn buffered_stream(
-    controller: &mut Controller,
-    gcode: Vec<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut writer = BufWriter::new(controller.serial.try_clone()?);
-    let mut reader = BufReader::new(controller.serial.try_clone()?);
-    let re = Regex::new(r"^IN\$J=")?;
-
-    for raw_line in gcode {
-        let interruptible = re.is_match(raw_line);
-        let line = if interruptible {
-            &raw_line[2..]
-        } else {
-            raw_line
-        };
-
-        controller.bytes_queued.push_back(line.len());
-
-        while controller.bytes_queued.iter().sum::<usize>() >= RX_BUFFER_SIZE {
-            let mut res = String::new();
-            reader.read_line(&mut res)?;
-            res = res.trim().to_string();
-
-            if !res.contains("ok") && !res.contains("error") {
-                println!("    MSG: \"{}\"", res);
-            } else {
-                controller.received_count += 1;
-                println!("  REC<{}: \"{}\"", controller.received_count, res);
-
-                if !controller.bytes_queued.is_empty() {
-                    controller.bytes_queued.pop_front();
-                }
-            }
-        }
-
-        writer.write_all(format!("{}\n", line).as_bytes())?;
-        writer.flush()?;
-        controller.sent_count += 1;
-        println!(
-            "SND{}>{}: \"{}\"",
-            interruptible.then(|| "-IN").unwrap_or(""),
-            controller.sent_count,
-            line
-        );
-
-        if interruptible {
-            wait_for_status(controller, Status::Idle)?;
-            controller.received_count += 1;
-            println!("  Proceeding");
-        }
-    }
-
-    while controller.sent_count > controller.received_count {
-        let mut res = String::new();
-        reader.read_line(&mut res)?;
-        res = res.trim().to_string();
-
-        if !res.contains("ok") && !res.contains("error") {
-            println!("    MSG: \"{}\"", res);
-        } else {
-            controller.received_count += 1;
-            println!("  REC<{}: \"{}\"", controller.received_count, res);
-
-            if !controller.bytes_queued.is_empty() {
-                controller.bytes_queued.pop_front();
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn main() {
@@ -151,12 +59,7 @@ fn main() {
         .try_clone()
         .expect("Failed to clone serial connection!");
 
-    let mut controller = Controller {
-        serial,
-        sent_count: 0,
-        received_count: 0,
-        bytes_queued: VecDeque::new(),
-    };
+    let mut controller = Controller::new(serial);
 
     let gpio = Gpio::new().expect("Failed to intialize GPIO!");
     let mut button = gpio
