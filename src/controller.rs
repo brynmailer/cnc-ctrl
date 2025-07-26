@@ -1,6 +1,10 @@
 use std::fmt;
 use std::io::{self, BufRead, Write};
-use std::{sync::mpsc, thread, time};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    sync::{Arc, mpsc},
+    thread, time,
+};
 
 use regex::Regex;
 
@@ -87,6 +91,7 @@ impl TryFrom<&str> for Report {
 pub struct Controller {
     report_rx: Option<mpsc::Receiver<Report>>,
     monitor_handle: Option<thread::JoinHandle<()>>,
+    polling: Arc<AtomicBool>,
 }
 
 impl Controller {
@@ -94,11 +99,15 @@ impl Controller {
         Self {
             report_rx: None,
             monitor_handle: None,
+            polling: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn start_monitoring(&mut self, serial: Box<dyn serialport::SerialPort>) {
         let (report_tx, report_rx) = mpsc::sync_channel(0);
+
+        let polling = self.polling.clone();
+        polling.store(true, Ordering::Relaxed);
 
         let handle = thread::spawn(move || {
             let mut writer = io::BufWriter::new(serial.try_clone().unwrap());
@@ -109,7 +118,7 @@ impl Controller {
                 Err(err)
             }
 
-            loop {
+            while polling.load(Ordering::Relaxed) {
                 writer.write_all("?".as_bytes()).or_else(log_err);
                 writer.flush().or_else(log_err);
 
@@ -133,6 +142,18 @@ impl Controller {
     }
 
     pub fn stop_monitoring(&mut self) {
-        if let Some(handle) = self.monitor_handle.take() {}
+        if let Some(handle) = self.monitor_handle.take() {
+            self.polling.store(false, Ordering::Relaxed);
+            handle.join();
+            self.report_rx.take();
+        }
+    }
+}
+
+impl Drop for Controller {
+    fn drop(&mut self) {
+        if self.polling.load(Ordering::Relaxed) {
+            self.stop_monitoring();
+        }
     }
 }
