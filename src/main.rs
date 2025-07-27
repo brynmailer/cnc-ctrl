@@ -28,26 +28,6 @@ fn wait_for_status(
     controller: &mut Controller,
     status: Status,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut writer = BufWriter::new(controller.serial.try_clone()?);
-    let mut reader = BufReader::new(controller.serial.try_clone()?);
-    let re = Regex::new(r"<([^|>]+)")?;
-
-    loop {
-        writer.write_all("?".as_bytes())?;
-        writer.flush()?;
-
-        let mut res = String::new();
-        reader.read_line(&mut res)?;
-        res = res.trim().to_string();
-
-        if let Some(captures) = re.captures(&res) {
-            if captures[1] == status.to_string() {
-                return Ok(());
-            }
-        }
-
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 fn main() {

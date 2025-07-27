@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     sync::{Arc, mpsc},
-    thread, time,
+    thread,
 };
 
 use regex::Regex;
@@ -48,7 +48,7 @@ impl TryFrom<&str> for Report {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let regex = Regex::new(r"^<([A-Za-z]+)(\|[^>]*)*>$").unwrap();
-        if !regex.is_match(value) {
+        if !regex.is_match(&value) {
             return Err(ControllerError::ParseError {
                 message: "Not a valid realtime report".to_string(),
                 input: value.to_string(),
@@ -88,72 +88,145 @@ impl TryFrom<&str> for Report {
     }
 }
 
+pub enum Command {
+    Gcode(String),
+    Realtime(u8),
+}
+
+pub enum Message {
+    Response(Response),
+    Push(Push),
+    Unknown(String),
+}
+
+pub enum Response {
+    Ok,
+    Err(u8),
+}
+
+pub enum Push {
+    Report(Report),
+}
+
+impl From<&str> for Message {
+    fn from(value: &str) -> Self {
+        if value.contains("ok") {
+            Message::Response(Response::Ok)
+        } else if let Some(code) = value.strip_prefix("error:") {
+            Message::Response(Response::Err(code.parse().unwrap()))
+        } else if let Ok(report) = Report::try_from(value) {
+            Message::Push(Push::Report(report))
+        } else {
+            Message::Unknown(value.to_string())
+        }
+    }
+}
+
 pub struct Controller {
-    report_rx: Option<mpsc::Receiver<Report>>,
-    monitor_handle: Option<thread::JoinHandle<()>>,
-    polling: Arc<AtomicBool>,
+    prio_serial_channel: Option<(mpsc::SyncSender<Command>, mpsc::Receiver<Push>)>,
+    serial_channel: Option<(mpsc::SyncSender<Command>, mpsc::Receiver<Response>)>,
+    serial_handles: Option<(thread::JoinHandle<()>, thread::JoinHandle<()>)>,
+    running: Arc<AtomicBool>,
 }
 
 impl Controller {
     pub fn new() -> Self {
         Self {
-            report_rx: None,
-            monitor_handle: None,
-            polling: Arc::new(AtomicBool::new(false)),
+            prio_serial_channel: None,
+            serial_channel: None,
+            serial_handles: None,
+            running: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn start_monitoring(&mut self, serial: Box<dyn serialport::SerialPort>) {
-        let (report_tx, report_rx) = mpsc::sync_channel(0);
+    pub fn start(&mut self, serial: Box<dyn serialport::SerialPort>) {
+        let mut writer = io::BufWriter::new(serial.try_clone().unwrap());
+        let mut reader = io::BufReader::new(serial.try_clone().unwrap());
 
-        let polling = self.polling.clone();
-        polling.store(true, Ordering::Relaxed);
+        let (prio_send_tx, prio_send_rx) = mpsc::sync_channel(0);
+        let (send_tx, send_rx) = mpsc::sync_channel(0);
 
-        let handle = thread::spawn(move || {
-            let mut writer = io::BufWriter::new(serial.try_clone().unwrap());
-            let mut reader = io::BufReader::new(serial.try_clone().unwrap());
+        let (prio_recv_tx, prio_recv_rx) = mpsc::sync_channel(0);
+        let (recv_tx, recv_rx) = mpsc::channel();
 
-            fn log_err<R, T: std::error::Error>(err: T) -> Result<R, T> {
-                eprintln!("MONITOR: {}", err);
-                Err(err)
-            }
+        let send_running = self.running.clone();
+        let recv_running = self.running.clone();
+        self.running.store(true, Ordering::Relaxed);
 
-            while polling.load(Ordering::Relaxed) {
-                writer.write_all("?".as_bytes()).or_else(log_err);
-                writer.flush().or_else(log_err);
+        fn log_err<R, T: std::error::Error>(err: T) -> Result<R, T> {
+            eprintln!("{}", err);
+            Err(err)
+        }
 
-                let mut response = String::new();
-                reader.read_line(&mut response).or_else(log_err);
-                match Report::try_from(response.trim()) {
-                    Ok(report) => {
-                        report_tx.try_send(report);
+        let send_handle = thread::spawn(move || {
+            fn send(writer: &mut io::BufWriter<Box<dyn serialport::SerialPort>>, command: Command) {
+                match command {
+                    Command::Gcode(gcode) => {
+                        writer
+                            .write_all(format!("{}\n", gcode).as_bytes())
+                            .or_else(log_err);
                     }
-                    Err(err) => {
-                        let _: Result<Report, ControllerError> = log_err(err);
+                    Command::Realtime(byte) => {
+                        writer.write_all(&[byte]).or_else(log_err);
                     }
                 }
 
-                thread::sleep(time::Duration::from_millis(200));
+                writer.flush().or_else(log_err);
+            }
+
+            while send_running.load(Ordering::Relaxed) {
+                if let Ok(command) = prio_send_rx.try_recv() {
+                    send(&mut writer, command);
+                }
+
+                if let Ok(command) = send_rx.try_recv() {
+                    send(&mut writer, command);
+                }
             }
         });
 
-        self.report_rx = Some(report_rx);
-        self.monitor_handle = Some(handle);
+        let recv_handle = thread::spawn(move || {
+            while recv_running.load(Ordering::Relaxed) {
+                let mut response = String::new();
+                reader.read_line(&mut response).or_else(log_err);
+                response = response.trim().to_string();
+
+                match Message::from(response.as_str()) {
+                    Message::Push(push) => {
+                        println!("RECV: PUSH < {}", response);
+                        let _ = prio_recv_tx.try_send(push);
+                    }
+                    Message::Response(res) => {
+                        println!("RECV: RESPONSE < {}", response);
+                        recv_tx.send(res).unwrap();
+                    }
+                    Message::Unknown(msg) => println!("RECV: UNKNOWN < {}", msg),
+                }
+            }
+        });
+
+        self.prio_serial_channel = Some((prio_send_tx, prio_recv_rx));
+        self.serial_channel = Some((send_tx, recv_rx));
+        self.serial_handles = Some((send_handle, recv_handle));
     }
 
-    pub fn stop_monitoring(&mut self) {
-        if let Some(handle) = self.monitor_handle.take() {
-            self.polling.store(false, Ordering::Relaxed);
-            handle.join();
-            self.report_rx.take();
+    pub fn stop(&mut self) {
+        if let Some((send_handle, recv_handle)) = self.serial_handles.take() {
+            self.running.store(false, Ordering::Relaxed);
+
+            send_handle.join();
+            recv_handle.join();
+
+            self.prio_serial_channel.take();
+            self.serial_channel.take();
         }
     }
 }
 
 impl Drop for Controller {
     fn drop(&mut self) {
-        if self.polling.load(Ordering::Relaxed) {
-            self.stop_monitoring();
+        if self.running.load(Ordering::Relaxed) {
+            self.stop();
         }
     }
 }
