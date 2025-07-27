@@ -1,6 +1,7 @@
+mod command;
 mod controller;
+mod message;
 
-use regex::Regex;
 use rppal::gpio::{Gpio, Trigger};
 use serialport::SerialPort;
 
@@ -23,12 +24,6 @@ const PROBE_PIN: u8 = 27;
 
 // GbrlHAL
 const RX_BUFFER_SIZE: usize = 1024;
-
-fn wait_for_status(
-    controller: &mut Controller,
-    status: Status,
-) -> Result<(), Box<dyn std::error::Error>> {
-}
 
 fn main() {
     let serial = serialport::new(PORT, BAUDRATE)
