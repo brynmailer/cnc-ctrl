@@ -1,10 +1,9 @@
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{
-    sync::{Arc, mpsc},
-    thread,
-};
+use std::{sync::Arc, thread};
+
+use crossbeam::channel;
 
 use crate::command::Command;
 use crate::message::{Message, Push, Response};
@@ -29,8 +28,9 @@ impl fmt::Display for ControllerError {
 }
 
 pub struct Controller {
-    prio_serial_channel: Option<(mpsc::SyncSender<Command>, mpsc::Receiver<Push>)>,
-    serial_channel: Option<(mpsc::SyncSender<Command>, mpsc::Receiver<Response>)>,
+    pub prio_serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Push>)>,
+    pub serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Response>)>,
+
     serial_handles: Option<(thread::JoinHandle<()>, thread::JoinHandle<()>)>,
     running: Arc<AtomicBool>,
 }
@@ -49,11 +49,11 @@ impl Controller {
         let mut writer = io::BufWriter::new(serial.try_clone().unwrap());
         let mut reader = io::BufReader::new(serial.try_clone().unwrap());
 
-        let (prio_send_tx, prio_send_rx) = mpsc::sync_channel(0);
-        let (send_tx, send_rx) = mpsc::sync_channel(0);
+        let (prio_send_tx, prio_send_rx) = channel::bounded(0);
+        let (send_tx, send_rx) = channel::bounded(0);
 
-        let (prio_recv_tx, prio_recv_rx) = mpsc::sync_channel(0);
-        let (recv_tx, recv_rx) = mpsc::channel();
+        let (prio_recv_tx, prio_recv_rx) = channel::bounded(0);
+        let (recv_tx, recv_rx) = channel::unbounded();
 
         let send_running = self.running.clone();
         let recv_running = self.running.clone();
@@ -82,10 +82,12 @@ impl Controller {
 
             while send_running.load(Ordering::Relaxed) {
                 if let Ok(command) = prio_send_rx.try_recv() {
+                    println!("SND: {}", command);
                     send(&mut writer, command);
                 }
 
                 if let Ok(command) = send_rx.try_recv() {
+                    println!("SND: {}", command);
                     send(&mut writer, command);
                 }
             }
@@ -99,11 +101,11 @@ impl Controller {
 
                 match Message::from(response.as_str()) {
                     Message::Push(push) => {
-                        println!("RECV: PUSH < {}", response);
+                        println!("RECV: PUSH '{}'", response);
                         let _ = prio_recv_tx.try_send(push);
                     }
                     Message::Response(res) => {
-                        println!("RECV: RESPONSE < {}", response);
+                        println!("RECV: RESPONSE '{}'", response);
                         recv_tx.send(res).unwrap();
                     }
                     Message::Unknown(msg) => println!("RECV: UNKNOWN < {}", msg),

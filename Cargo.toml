@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+crossbeam = "0.8.4"
 regex = "1.11.1"
 rppal = "0.22.1"
 serialport = "4.7.2"

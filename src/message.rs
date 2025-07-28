@@ -8,6 +8,15 @@ pub enum Message {
     Unknown(String),
 }
 
+pub enum Response {
+    Ok,
+    Err(u8),
+}
+
+pub enum Push {
+    Report(Report),
+}
+
 impl From<&str> for Message {
     fn from(value: &str) -> Self {
         if value.contains("ok") {
@@ -22,19 +31,10 @@ impl From<&str> for Message {
     }
 }
 
-pub enum Response {
-    Ok,
-    Err(u8),
-}
-
-pub enum Push {
-    Report(Report),
-}
-
 pub struct Report {
-    status: Option<String>,
-    mpos: Option<(f32, f32, f32)>,
-    bf: Option<(usize, usize)>,
+    pub status: Option<String>,
+    pub mpos: Option<(f32, f32, f32)>,
+    pub bf: Option<(usize, usize)>,
 }
 
 impl Default for Report {
