@@ -3,7 +3,7 @@ mod controller;
 mod message;
 
 use std::collections::VecDeque;
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -16,6 +16,8 @@ use serialport::SerialPort;
 use command::Command;
 use controller::Controller;
 use message::{Push, Report};
+
+use crate::message::Status;
 
 // Serial
 const PORT: &str = "/dev/ttyUSB0";
@@ -62,14 +64,47 @@ fn init_gpio(controller: &Controller) -> (gpio::InputPin, gpio::InputPin) {
     (button, probe)
 }
 
-fn buffered_stream(
-    controller: &Controller,
-    gcode: Vec<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn wait_for_report<F: Fn(Report) -> bool>(controller: &Controller, predicate: Option<F>) -> Report {
     let Some((prio_serial_tx, prio_serial_rx)) = controller.prio_serial_channel.clone() else {
         panic!("Failed to clone serial: Controller not started");
     };
 
+    let polling = Arc::new(AtomicBool::new(true));
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            while polling.load(Ordering::Relaxed) {
+                prio_serial_tx
+                    .send(Command::Realtime(b'?'))
+                    .expect("Failed to poll grbl status report");
+
+                thread::sleep(Duration::from_millis(200));
+            }
+        });
+
+        loop {
+            match prio_serial_rx.recv() {
+                Ok(Push::Report(report)) => {
+                    if let Some(matcher) = &predicate {
+                        if !matcher(report) {
+                            continue;
+                        }
+                    }
+
+                    polling.store(false, Ordering::Relaxed);
+                    return report;
+                }
+                Err(err) => panic!("Failed to wait for interrupt: {}", err),
+                _ => continue,
+            }
+        }
+    })
+}
+
+fn buffered_stream(
+    controller: &Controller,
+    gcode: Vec<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some((serial_tx, serial_rx)) = controller.serial_channel.clone() else {
         panic!("Failed to stream gcode: Controller not started");
     };
@@ -95,39 +130,25 @@ fn buffered_stream(
         sent_count += 1;
 
         if interruptible {
-            let polling = Arc::new(AtomicBool::new(true));
-
-            thread::scope(|scope| {
-                scope.spawn(|| {
-                    while polling.load(Ordering::Relaxed) {
-                        prio_serial_tx
-                            .send(Command::Realtime(b'?'))
-                            .expect("Failed to poll grbl status report");
-
-                        thread::sleep(Duration::from_millis(200));
-                    }
-                });
-
-                loop {
-                    match prio_serial_rx.recv() {
-                        Ok(Push::Report(Report { status, mpos, .. }))
-                            if status == Some("Idle".to_string()) && mpos.is_some() =>
-                        {
-                            let unwrapped_pos = mpos.unwrap();
-                            println!(
-                                "x: {}, y: {}, z: {}",
-                                unwrapped_pos.0, unwrapped_pos.1, unwrapped_pos.2
-                            );
-
-                            break;
+            let report = wait_for_report(
+                controller,
+                Some(|report| {
+                    matches!(
+                        report,
+                        Report {
+                            status: Some(Status::Idle),
+                            mpos: Some(_),
+                            ..
                         }
-                        Err(err) => panic!("Failed to wait for interrupt: {}", err),
-                        _ => continue,
-                    }
-                }
+                    )
+                }),
+            );
 
-                polling.store(false, Ordering::Relaxed);
-            });
+            let unwrapped_mpos = report.mpos.unwrap();
+            println!(
+                "X{} Y{} Z{}",
+                unwrapped_mpos.0, unwrapped_mpos.1, unwrapped_mpos.2
+            );
         }
     }
 
@@ -176,8 +197,6 @@ fn main() {
         // let gcode = vec[];
 
         buffered_stream(&mut controller, gcode).expect("Failed to stream G-code");
-
-        wait_for_status(&mut controller, Status::Idle).expect("Failed to wait for Idle status");
 
         println!("Execution complete");
     }

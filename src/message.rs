@@ -32,9 +32,27 @@ impl From<&str> for Message {
 }
 
 pub struct Report {
-    pub status: Option<String>,
+    pub status: Option<Status>,
     pub mpos: Option<(f32, f32, f32)>,
     pub bf: Option<(usize, usize)>,
+}
+
+pub enum Status {
+    Idle,
+    Home,
+    Jog,
+    Unknown(String),
+}
+
+impl From<&str> for Status {
+    fn from(value: &str) -> Self {
+        match value {
+            "Idle" => Status::Idle,
+            "Home" => Status::Home,
+            "Jog" => Status::Jog,
+            _ => Status::Unknown(value.to_string()),
+        }
+    }
 }
 
 impl Default for Report {
@@ -63,7 +81,7 @@ impl TryFrom<&str> for Report {
         let parts: Vec<&str> = content.split("|").collect();
 
         let mut report = Report::default();
-        report.status = Some(parts[0].to_string());
+        report.status = Some(Status::from(parts[0]));
 
         for part in &parts[1..] {
             if let Some(pos_str) = part.strip_prefix("MPos:") {
