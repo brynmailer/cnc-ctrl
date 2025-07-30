@@ -203,7 +203,7 @@ fn main() {
     })
     .expect("Failed to set up exit handler");
 
-    loop {
+    while controller.running.load(Ordering::Relaxed) {
         println!("Waiting for start signal...");
         button
             .poll_interrupt(true, None)
