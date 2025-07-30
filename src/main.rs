@@ -53,6 +53,7 @@ fn init_gpio(controller: &Controller) -> (gpio::InputPin, gpio::InputPin) {
             Trigger::RisingEdge,
             Some(Duration::from_millis(30)),
             move |_| {
+                println!("Interrupting");
                 serial_tx
                     .send(Command::Realtime(0x85))
                     .expect("Failed to send interrupt command");
