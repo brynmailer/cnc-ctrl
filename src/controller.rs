@@ -68,16 +68,16 @@ impl Controller {
             fn send(writer: &mut io::BufWriter<Box<dyn serialport::SerialPort>>, command: Command) {
                 match command {
                     Command::Gcode(gcode) => {
-                        writer
+                        let _ = writer
                             .write_all(format!("{}\n", gcode).as_bytes())
                             .or_else(log_err);
                     }
                     Command::Realtime(byte) => {
-                        writer.write_all(&[byte]).or_else(log_err);
+                        let _ = writer.write_all(&[byte]).or_else(log_err);
                     }
                 }
 
-                writer.flush().or_else(log_err);
+                let _ = writer.flush().or_else(log_err);
             }
 
             while send_running.load(Ordering::Relaxed) {
@@ -96,7 +96,7 @@ impl Controller {
         let recv_handle = thread::spawn(move || {
             while recv_running.load(Ordering::Relaxed) {
                 let mut response = String::new();
-                reader.read_line(&mut response).or_else(log_err);
+                let _ = reader.read_line(&mut response).or_else(log_err);
                 response = response.trim().to_string();
 
                 match Message::from(response.as_str()) {
@@ -122,8 +122,8 @@ impl Controller {
         if let Some((send_handle, recv_handle)) = self.serial_handles.take() {
             self.running.store(false, Ordering::Relaxed);
 
-            send_handle.join();
-            recv_handle.join();
+            let _ = send_handle.join();
+            let _ = recv_handle.join();
 
             self.prio_serial_channel.take();
             self.serial_channel.take();

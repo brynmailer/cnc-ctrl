@@ -3,7 +3,9 @@ mod controller;
 mod message;
 
 use std::collections::VecDeque;
-use std::io::Write;
+use std::env;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -11,13 +13,10 @@ use std::time::Duration;
 
 use regex::Regex;
 use rppal::gpio::{self, Gpio, Trigger};
-use serialport::SerialPort;
 
 use command::Command;
 use controller::Controller;
-use message::{Push, Report};
-
-use crate::message::Status;
+use message::{Push, Report, Status};
 
 // Serial
 const PORT: &str = "/dev/ttyUSB0";
@@ -64,7 +63,10 @@ fn init_gpio(controller: &Controller) -> (gpio::InputPin, gpio::InputPin) {
     (button, probe)
 }
 
-fn wait_for_report<F: Fn(Report) -> bool>(controller: &Controller, predicate: Option<F>) -> Report {
+fn wait_for_report<F: Fn(&Report) -> bool>(
+    controller: &Controller,
+    predicate: Option<F>,
+) -> Report {
     let Some((prio_serial_tx, prio_serial_rx)) = controller.prio_serial_channel.clone() else {
         panic!("Failed to clone serial: Controller not started");
     };
@@ -86,7 +88,7 @@ fn wait_for_report<F: Fn(Report) -> bool>(controller: &Controller, predicate: Op
             match prio_serial_rx.recv() {
                 Ok(Push::Report(report)) => {
                     if let Some(matcher) = &predicate {
-                        if !matcher(report) {
+                        if !matcher(&report) {
                             continue;
                         }
                     }
@@ -95,7 +97,6 @@ fn wait_for_report<F: Fn(Report) -> bool>(controller: &Controller, predicate: Op
                     return report;
                 }
                 Err(err) => panic!("Failed to wait for interrupt: {}", err),
-                _ => continue,
             }
         }
     })
@@ -132,10 +133,10 @@ fn buffered_stream(
         if interruptible {
             let report = wait_for_report(
                 controller,
-                Some(|report| {
+                Some(|report: &Report| {
                     matches!(
                         report,
-                        Report {
+                        &Report {
                             status: Some(Status::Idle),
                             mpos: Some(_),
                             ..
@@ -162,18 +163,30 @@ fn buffered_stream(
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: {} <gcode_file>", args[0]);
+        std::process::exit(1);
+    }
+
+    let gcode_file_path = &args[1];
+    let file = File::open(gcode_file_path).expect("Failed to open gcode file");
+    let reader = BufReader::new(file);
+
+    let gcode_lines: Vec<String> = reader
+        .lines()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Failed to read gcode file");
+
     let serial = serialport::new(PORT, BAUDRATE)
         .timeout(Duration::from_millis(TIMEOUT_MS))
         .open()
         .expect("Failed to open serial connection");
-    let mut serial_clone = serial
-        .try_clone()
-        .expect("Failed to clone serial connection");
 
     let mut controller = Controller::new();
     controller.start(serial);
 
-    let (button, probe) = init_gpio(&controller);
+    let (mut button, _) = init_gpio(&controller);
 
     loop {
         println!("Waiting for start signal...");
@@ -184,19 +197,10 @@ fn main() {
         println!("Beginning execution");
 
         println!("Waking up Grbl");
-        controller
-            .serial
-            .write_all(b"\n\n")
-            .expect("Serial write failed");
-        thread::sleep(Duration::from_secs(2));
-        controller
-            .serial
-            .clear(serialport::ClearBuffer::Input)
-            .expect("Failed to clear serial input buffer");
+        // TODO: Add grbl wake up sequence if needed
 
-        // let gcode = vec[];
-
-        buffered_stream(&mut controller, gcode).expect("Failed to stream G-code");
+        let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
+        buffered_stream(&controller, gcode).expect("Failed to stream G-code");
 
         println!("Execution complete");
     }
