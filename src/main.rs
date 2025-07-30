@@ -66,12 +66,13 @@ fn init_gpio(controller: &Controller) -> (gpio::InputPin, gpio::InputPin) {
 fn wait_for_report<F: Fn(&Report) -> bool>(
     controller: &Controller,
     predicate: Option<F>,
-) -> Report {
+) -> Option<Report> {
     let Some((prio_serial_tx, prio_serial_rx)) = controller.prio_serial_channel.clone() else {
         panic!("Failed to clone serial: Controller not started");
     };
 
     let polling = Arc::new(AtomicBool::new(true));
+    let running = controller.running.clone();
 
     thread::scope(|scope| {
         scope.spawn(|| {
@@ -85,6 +86,10 @@ fn wait_for_report<F: Fn(&Report) -> bool>(
         });
 
         loop {
+            if !running.load(Ordering::Relaxed) {
+                return None;
+            }
+
             match prio_serial_rx.recv() {
                 Ok(Push::Report(report)) => {
                     if let Some(matcher) = &predicate {
@@ -94,7 +99,7 @@ fn wait_for_report<F: Fn(&Report) -> bool>(
                     }
 
                     polling.store(false, Ordering::Relaxed);
-                    return report;
+                    return Some(report);
                 }
                 Err(err) => panic!("Failed to wait for interrupt: {}", err),
             }
@@ -135,7 +140,7 @@ fn buffered_stream(
         sent_count += 1;
 
         if interruptible {
-            let report = wait_for_report(
+            if let Some(report) = wait_for_report(
                 controller,
                 Some(|report: &Report| {
                     matches!(
@@ -147,13 +152,13 @@ fn buffered_stream(
                         }
                     )
                 }),
-            );
-
-            let unwrapped_mpos = report.mpos.unwrap();
-            println!(
-                "X{} Y{} Z{}",
-                unwrapped_mpos.0, unwrapped_mpos.1, unwrapped_mpos.2
-            );
+            ) {
+                let unwrapped_mpos = report.mpos.unwrap();
+                println!(
+                    "X{} Y{} Z{}",
+                    unwrapped_mpos.0, unwrapped_mpos.1, unwrapped_mpos.2
+                );
+            }
         }
     }
 
@@ -188,9 +193,15 @@ fn main() {
         .expect("Failed to open serial connection");
 
     let mut controller = Controller::new();
+    let controller_running = controller.running.clone();
     controller.start(serial);
 
     let (mut button, _) = init_gpio(&controller);
+
+    ctrlc::set_handler(move || {
+        controller_running.store(false, Ordering::Relaxed);
+    })
+    .expect("Failed to set up exit handler");
 
     loop {
         println!("Waiting for start signal...");

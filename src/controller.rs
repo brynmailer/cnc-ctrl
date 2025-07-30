@@ -30,9 +30,9 @@ impl fmt::Display for ControllerError {
 pub struct Controller {
     pub prio_serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Push>)>,
     pub serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Response>)>,
+    pub running: Arc<AtomicBool>,
 
     serial_handles: Option<(thread::JoinHandle<()>, thread::JoinHandle<()>)>,
-    running: Arc<AtomicBool>,
 }
 
 impl Controller {
