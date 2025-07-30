@@ -117,7 +117,11 @@ fn buffered_stream(
 
     for raw_line in gcode {
         let interruptible = re.is_match(raw_line);
-        let line = raw_line.trim().strip_suffix(" IN").unwrap();
+        let line = if interruptible {
+            raw_line.trim().strip_suffix(" IN").unwrap()
+        } else {
+            raw_line.trim()
+        };
 
         bytes_queued.push_back(line.len());
 
