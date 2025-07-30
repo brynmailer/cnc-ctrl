@@ -191,17 +191,25 @@ fn main() {
         .timeout(Duration::from_millis(TIMEOUT_MS))
         .open()
         .expect("Failed to open serial connection");
+    let mut serial_clone = serial
+        .try_clone()
+        .expect("Failed to clone serial connection");
 
     let mut controller = Controller::new();
     let controller_running = controller.running.clone();
     controller.start(serial);
 
-    let (mut button, _) = init_gpio(&controller);
-
     ctrlc::set_handler(move || {
+        println!("Shutting down...");
         controller_running.store(false, Ordering::Relaxed);
+        thread::sleep(Duration::from_secs(2));
+        serial_clone
+            .write_all(&[0x18])
+            .expect("Failed to soft reset Grbl");
     })
     .expect("Failed to set up exit handler");
+
+    let (mut button, _) = init_gpio(&controller);
 
     while controller.running.load(Ordering::Relaxed) {
         println!("Waiting for start signal...");
