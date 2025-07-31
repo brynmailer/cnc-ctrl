@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use regex::Regex;
-use rppal::gpio::{self, Gpio, Trigger};
+use rppal::gpio::{Gpio, Trigger};
 
 use command::Command;
 use controller::Controller;
@@ -29,40 +29,6 @@ const PROBE_PIN: u8 = 27;
 
 // GbrlHAL
 const RX_BUFFER_SIZE: usize = 1024;
-
-fn init_gpio(controller: &Controller) -> (gpio::InputPin, gpio::InputPin) {
-    let gpio = Gpio::new().expect("Failed to intialize GPIO");
-    let mut button = gpio
-        .get(BUTTON_PIN)
-        .expect("Failed to initialize button")
-        .into_input_pullup();
-    let mut probe = gpio
-        .get(PROBE_PIN)
-        .expect("Failed to initialize probe")
-        .into_input_pullup();
-
-    let Some((serial_tx, _)) = controller.prio_serial_channel.clone() else {
-        panic!("Failed to init gpio: Controller not started");
-    };
-
-    button
-        .set_interrupt(Trigger::RisingEdge, Some(Duration::from_millis(30)))
-        .expect("Failed to initialize probe interrupt");
-    probe
-        .set_async_interrupt(
-            Trigger::RisingEdge,
-            Some(Duration::from_millis(30)),
-            move |_| {
-                println!("Interrupting");
-                serial_tx
-                    .send(Command::Realtime(0x85))
-                    .expect("Failed to send interrupt command");
-            },
-        )
-        .expect("Failed to initialize probe interrupt");
-
-    (button, probe)
-}
 
 fn wait_for_report<F: Fn(&Report) -> bool>(
     controller: &Controller,
@@ -210,7 +176,35 @@ fn main() {
     })
     .expect("Failed to set up exit handler");
 
-    let (mut button, _) = init_gpio(&controller);
+    let gpio = Gpio::new().expect("Failed to intialize GPIO");
+    let mut button = gpio
+        .get(BUTTON_PIN)
+        .expect("Failed to initialize button")
+        .into_input_pullup();
+    let mut probe = gpio
+        .get(PROBE_PIN)
+        .expect("Failed to initialize probe")
+        .into_input_pullup();
+
+    let Some((serial_tx, _)) = controller.prio_serial_channel.clone() else {
+        panic!("Failed to init gpio: Controller not started");
+    };
+
+    button
+        .set_interrupt(Trigger::RisingEdge, Some(Duration::from_millis(30)))
+        .expect("Failed to initialize start signal interrupt");
+    probe
+        .set_async_interrupt(
+            Trigger::RisingEdge,
+            Some(Duration::from_millis(30)),
+            move |_| {
+                println!("Interrupting");
+                serial_tx
+                    .send(Command::Realtime(0x85))
+                    .expect("Failed to send interrupt command");
+            },
+        )
+        .expect("Failed to initialize probe interrupt");
 
     while controller.running.load(Ordering::Relaxed) {
         println!("Waiting for start signal...");
