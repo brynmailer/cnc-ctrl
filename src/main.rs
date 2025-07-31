@@ -95,6 +95,7 @@ fn buffered_stream(
         } else {
             raw_line.trim()
         };
+        println!("'{}' {}", line, interruptible);
 
         bytes_queued.push_back(line.len());
 
