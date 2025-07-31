@@ -24,8 +24,9 @@ const BAUDRATE: u32 = 115200;
 const TIMEOUT_MS: u64 = 60000;
 
 // GPIO
-const BUTTON_PIN: u8 = 22;
-const PROBE_PIN: u8 = 27;
+const CTRL_PIN: u8 = 22;
+const PROBE_XY_PIN: u8 = 27;
+const PROBE_Z_PIN: u8 = 23;
 
 // GbrlHAL
 const RX_BUFFER_SIZE: usize = 1024;
@@ -95,7 +96,6 @@ fn buffered_stream(
         } else {
             raw_line.trim()
         };
-        println!("'{}' {}", line, interruptible);
 
         bytes_queued.push_back(line.len());
 
@@ -190,23 +190,26 @@ fn main() {
     .expect("Failed to set up exit handler");
 
     let gpio = Gpio::new().expect("Failed to intialize GPIO");
-    let mut button = gpio
-        .get(BUTTON_PIN)
-        .expect("Failed to initialize button")
+    let mut ctrl = gpio
+        .get(CTRL_PIN)
+        .expect("Failed to initialize ctrl")
         .into_input_pullup();
-    let mut probe = gpio
-        .get(PROBE_PIN)
-        .expect("Failed to initialize probe")
+    let mut probe_xy = gpio
+        .get(PROBE_XY_PIN)
+        .expect("Failed to initialize probe xy")
         .into_input_pullup();
+    let mut probe_z = gpio
+        .get(PROBE_Z_PIN)
+        .expect("Failed to initialize probe z")
+        .into_input_pullup();
+
+    ctrl.set_interrupt(Trigger::RisingEdge, Some(Duration::from_millis(30)))
+        .expect("Failed to initialize start signal interrupt");
 
     let Some((serial_tx, _)) = controller.prio_serial_channel.clone() else {
         panic!("Failed to init gpio: Controller not started");
     };
-
-    button
-        .set_interrupt(Trigger::RisingEdge, Some(Duration::from_millis(30)))
-        .expect("Failed to initialize start signal interrupt");
-    probe
+    probe_xy
         .set_async_interrupt(
             Trigger::RisingEdge,
             Some(Duration::from_millis(30)),
@@ -216,7 +219,21 @@ fn main() {
                     .expect("Failed to send interrupt command");
             },
         )
-        .expect("Failed to initialize probe interrupt");
+        .expect("Failed to initialize probe xy interrupt");
+    let Some((serial_tx, _)) = controller.prio_serial_channel.clone() else {
+        panic!("Failed to init gpio: Controller not started");
+    };
+    probe_z
+        .set_async_interrupt(
+            Trigger::RisingEdge,
+            Some(Duration::from_millis(30)),
+            move |_| {
+                serial_tx
+                    .send(Command::Realtime(0x85))
+                    .expect("Failed to send interrupt command");
+            },
+        )
+        .expect("Failed to initialize probe z interrupt");
 
     let mut file_suffix = 0;
     let mut file = loop {
@@ -230,8 +247,7 @@ fn main() {
 
     while controller.running.load(Ordering::Relaxed) {
         println!("Waiting for start signal...");
-        button
-            .poll_interrupt(true, None)
+        ctrl.poll_interrupt(true, None)
             .expect("Failed to poll button interrupt");
 
         println!("Beginning execution");
