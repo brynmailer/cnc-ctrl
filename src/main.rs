@@ -89,7 +89,7 @@ fn buffered_stream(
     let mut sent_count = 0;
 
     for raw_line in gcode {
-        let interruptible = re.is_match(raw_line);
+        let interruptible = re.is_match(raw_line.trim());
         let line = if interruptible {
             raw_line.trim().strip_suffix(" IN").unwrap()
         } else {
