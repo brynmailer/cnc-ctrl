@@ -5,7 +5,7 @@ mod message;
 use std::collections::VecDeque;
 use std::env;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -77,6 +77,7 @@ fn wait_for_report<F: Fn(&Report) -> bool>(
 fn buffered_stream(
     controller: &Controller,
     gcode: Vec<&str>,
+    mut file: Option<&File>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some((serial_tx, serial_rx)) = controller.serial_channel.clone() else {
         panic!("Failed to stream gcode: Controller not started");
@@ -125,6 +126,17 @@ fn buffered_stream(
                     "X{} Y{} Z{}",
                     unwrapped_mpos.0, unwrapped_mpos.1, unwrapped_mpos.2
                 );
+
+                if let Some(file) = &mut file {
+                    file.write_all(
+                        format!(
+                            "X{} Y{} Z{}\n",
+                            unwrapped_mpos.0, unwrapped_mpos.1, unwrapped_mpos.2
+                        )
+                        .as_bytes(),
+                    )
+                    .expect("Failed to write point to file");
+                }
             }
         }
     }
@@ -198,13 +210,22 @@ fn main() {
             Trigger::RisingEdge,
             Some(Duration::from_millis(30)),
             move |_| {
-                println!("Interrupting");
                 serial_tx
                     .send(Command::Realtime(0x85))
                     .expect("Failed to send interrupt command");
             },
         )
         .expect("Failed to initialize probe interrupt");
+
+    let mut file_suffix = 0;
+    let mut file = loop {
+        if let Ok(result) = File::create_new(format!("/home/admin/points/tank-{}", file_suffix)) {
+            break result;
+        } else {
+            file_suffix += 1;
+            continue;
+        }
+    };
 
     while controller.running.load(Ordering::Relaxed) {
         println!("Waiting for start signal...");
@@ -218,7 +239,20 @@ fn main() {
         // TODO: Add grbl wake up sequence if needed
 
         let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
-        buffered_stream(&controller, gcode).expect("Failed to stream G-code");
+        buffered_stream(&controller, gcode, Some(&mut file)).expect("Failed to stream G-code");
+
+        wait_for_report(
+            &controller,
+            Some(|report: &Report| {
+                matches!(
+                    report,
+                    &Report {
+                        status: Some(Status::Idle),
+                        ..
+                    }
+                )
+            }),
+        );
 
         println!("Execution complete");
     }
