@@ -26,7 +26,6 @@ const TIMEOUT_MS: u64 = 60000;
 // GPIO
 const CTRL_PIN: u8 = 22;
 const PROBE_XY_PIN: u8 = 27;
-const PROBE_Z_PIN: u8 = 23;
 
 // GbrlHAL
 const RX_BUFFER_SIZE: usize = 1024;
@@ -198,10 +197,6 @@ fn main() {
         .get(PROBE_XY_PIN)
         .expect("Failed to initialize probe xy")
         .into_input_pullup();
-    let mut probe_z = gpio
-        .get(PROBE_Z_PIN)
-        .expect("Failed to initialize probe z")
-        .into_input_pullup();
 
     ctrl.set_interrupt(Trigger::RisingEdge, Some(Duration::from_millis(30)))
         .expect("Failed to initialize start signal interrupt");
@@ -220,20 +215,6 @@ fn main() {
             },
         )
         .expect("Failed to initialize probe xy interrupt");
-    let Some((serial_tx, _)) = controller.prio_serial_channel.clone() else {
-        panic!("Failed to init gpio: Controller not started");
-    };
-    probe_z
-        .set_async_interrupt(
-            Trigger::RisingEdge,
-            Some(Duration::from_millis(30)),
-            move |_| {
-                serial_tx
-                    .send(Command::Realtime(0x85))
-                    .expect("Failed to send interrupt command");
-            },
-        )
-        .expect("Failed to initialize probe z interrupt");
 
     let mut file_suffix = 0;
     let mut file = loop {
