@@ -2,6 +2,7 @@ pub mod command;
 pub mod message;
 pub mod serial;
 
+use log::{debug, error};
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +17,7 @@ use message::{Message, Push, Response};
 pub enum ControllerError {
     ParseError { message: String, input: String },
     GcodeError(Vec<(i32, Response)>),
+    SerialError(String),
 }
 
 impl std::error::Error for ControllerError {}
@@ -24,14 +26,17 @@ impl fmt::Display for ControllerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ControllerError::ParseError { message, input } => {
-                write!(f, "Failed to parse '{}'. {}", input, message)
+                write!(f, "Failed to parse '{}': {}", input, message)
             }
             ControllerError::GcodeError(errors) => {
                 for error in errors {
-                    writeln!(f, "Line {} - {}", error.0, error.1)?;
+                    writeln!(f, "Line {}: {}", error.0, error.1)?;
                 }
 
                 Ok(())
+            }
+            ControllerError::SerialError(message) => {
+                write!(f, "Serial error: {}", message)
             }
         }
     }
@@ -71,7 +76,7 @@ impl Controller {
         self.running.store(true, Ordering::Relaxed);
 
         fn log_err<R, T: std::error::Error>(err: T) -> Result<R, T> {
-            eprintln!("{}", err);
+            error!("{}", err);
             Err(err)
         }
 
@@ -82,7 +87,7 @@ impl Controller {
                 verbose: bool,
             ) {
                 if verbose {
-                    println!("Serial (SND) > {}", command);
+                    debug!("Serial (SND) > {}", command);
                 }
 
                 match command {
@@ -117,7 +122,7 @@ impl Controller {
                 let message = Message::from(response.trim());
 
                 if verbose_logging {
-                    println!("Serial (RECV) < {}", message);
+                    debug!("Serial (RECV) < {}", message);
                 }
 
                 match message {

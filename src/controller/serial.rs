@@ -6,39 +6,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use log::error;
 use regex::Regex;
 
-use super::Controller;
 use super::command::Command;
 use super::message::{Push, Report, Response, Status};
+use super::{Controller, ControllerError};
 
 pub fn wait_for_report<F: Fn(&Report) -> bool>(
     controller: &Controller,
     predicate: Option<F>,
-) -> Option<Report> {
+) -> Result<Option<Report>, ControllerError> {
     let Some((prio_serial_tx, prio_serial_rx)) = controller.prio_serial_channel.clone() else {
-        panic!("Failed to clone serial: Controller not started");
+        return Err(ControllerError::SerialError(
+            "Controller not started".to_string(),
+        ));
     };
 
     let polling = Arc::new(AtomicBool::new(true));
     let running = controller.running.clone();
 
-    thread::scope(|scope| {
+    Ok(thread::scope(|scope| {
         scope.spawn(|| {
             while polling.load(Ordering::Relaxed) {
-                prio_serial_tx
-                    .send(Command::Realtime(b'?'))
-                    .expect("Failed to poll grbl status report");
+                if let Err(error) = prio_serial_tx.send(Command::Realtime(b'?')) {
+                    error!("Failed to poll status report: {}", error);
+                }
 
                 thread::sleep(Duration::from_millis(200));
             }
         });
 
-        loop {
-            if !running.load(Ordering::Relaxed) {
-                return None;
-            }
-
+        while running.load(Ordering::Relaxed) {
             match prio_serial_rx.recv() {
                 Ok(Push::Report(report)) => {
                     if let Some(matcher) = &predicate {
@@ -48,15 +47,19 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
                     }
 
                     polling.store(false, Ordering::Relaxed);
-                    return Some(report);
+                    return Ok(Some(report));
                 }
-                Err(err) => {
-                    eprintln!("Failed to wait for interrupt: {}", err);
-                    return None;
+                Err(error) => {
+                    return Err(ControllerError::SerialError(format!(
+                        "Failed to wait for status report: {}",
+                        error
+                    )));
                 }
             }
         }
-    })
+
+        Ok(None)
+    })?)
 }
 
 pub fn buffered_stream(
@@ -64,12 +67,14 @@ pub fn buffered_stream(
     gcode: Vec<&str>,
     rx_buffer_size: usize,
     mut file: Option<&mut File>,
-) -> Result<Vec<(i32, Response)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<(i32, Response)>, ControllerError> {
     let Some((serial_tx, serial_rx)) = controller.serial_channel.clone() else {
-        panic!("Failed to stream G-code: Controller not started");
+        return Err(ControllerError::SerialError(
+            "Controller not started".to_string(),
+        ));
     };
 
-    let re = Regex::new(r"^\$J=.* IN$")?;
+    let re = Regex::new(r"^\$J=.* IN$").expect("Failed to create regex");
     let mut bytes_queued = VecDeque::new();
     let mut received_count = 0;
     let mut sent_count = 0;
@@ -78,8 +83,11 @@ pub fn buffered_stream(
 
     let mut receive = |received_count: &mut i32,
                        bytes_queued: &mut VecDeque<usize>|
-     -> Result<(), Box<dyn std::error::Error>> {
-        let response = serial_rx.recv()?;
+     -> Result<(), ControllerError> {
+        let response = serial_rx.recv().map_err(|error| {
+            ControllerError::SerialError(format!("Failed to wait for response: {}", error))
+        })?;
+
         *received_count += 1;
         bytes_queued.pop_front();
 
@@ -102,11 +110,15 @@ pub fn buffered_stream(
             receive(&mut received_count, &mut bytes_queued)?;
         }
 
-        serial_tx.send(Command::Gcode(line.to_string()))?;
+        serial_tx
+            .send(Command::Gcode(line.to_string()))
+            .map_err(|error| {
+                ControllerError::SerialError(format!("Failed to send G-code command: {}", error))
+            })?;
         sent_count += 1;
 
         if interruptible {
-            if let Some(report) = wait_for_report(
+            let report = wait_for_report(
                 controller,
                 Some(|report: &Report| {
                     matches!(
@@ -118,7 +130,9 @@ pub fn buffered_stream(
                         }
                     )
                 }),
-            ) {
+            )?;
+
+            if let Some(report) = report {
                 let unwrapped_mpos = report.mpos.unwrap();
                 if let Some(file) = &mut file {
                     file.write_all(
@@ -128,7 +142,9 @@ pub fn buffered_stream(
                         )
                         .as_bytes(),
                     )
-                    .expect("Failed to write point to file");
+                    .map_err(|error| {
+                        ControllerError::SerialError(format!("Failed to save point: {}", error))
+                    })?;
                 }
             }
         }

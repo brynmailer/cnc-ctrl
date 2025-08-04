@@ -1,6 +1,7 @@
 mod config;
 mod controller;
 
+use log::{error, info};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command as ProcessCommand;
@@ -53,13 +54,13 @@ fn execute_gcode_step(
     let templated_path = apply_template(&expanded_path, timestamp);
 
     let file = File::open(&templated_path)
-        .map_err(|e| format!("Failed to open G-code file '{}': {}", templated_path, e))?;
+        .map_err(|error| format!("Failed to open G-code file '{}': {}", templated_path, error))?;
     let reader = BufReader::new(file);
 
     let gcode_lines: Vec<String> = reader
         .lines()
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to read G-code file: {}", e))?;
+        .map_err(|error| format!("Failed to read G-code file: {}", error))?;
 
     let mut output_file = if let Some(points_config) = &step.points {
         if points_config.save {
@@ -70,8 +71,11 @@ fn execute_gcode_step(
                 std::fs::create_dir_all(parent)?;
             }
 
-            Some(File::create(&templated_output).map_err(|e| {
-                format!("Failed to create output file '{}': {}", templated_output, e)
+            Some(File::create(&templated_output).map_err(|error| {
+                format!(
+                    "Failed to create output file '{}': {}",
+                    templated_output, error
+                )
             })?)
         } else {
             None
@@ -83,17 +87,17 @@ fn execute_gcode_step(
     let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
 
     if step.check {
-        println!("Checking G-code");
+        info!("Checking G-code");
 
         if let Some((serial_tx, _)) = controller.serial_channel.clone() {
             serial_tx
                 .send(Command::Gcode("$C".to_string()))
-                .map_err(|e| format!("Failed to enable check mode: {}", e))?;
+                .map_err(|error| format!("Failed to enable check mode: {}", error))?;
         }
 
         let errors: Vec<(i32, Response)> =
             buffered_stream(controller, gcode.clone(), rx_buffer_size, None)
-                .map_err(|e| format!("Failed to stream G-code in check mode: {}", e))?
+                .map_err(|error| format!("Failed to stream G-code in check mode: {}", error))?
                 .iter()
                 .filter_map(|res| {
                     if let Response::Error(_) = res.1 {
@@ -107,21 +111,21 @@ fn execute_gcode_step(
         if let Some((serial_tx, _)) = controller.serial_channel.clone() {
             serial_tx
                 .send(Command::Gcode("$C".to_string()))
-                .map_err(|e| format!("Failed to disable check mode: {}", e))?;
+                .map_err(|error| format!("Failed to disable check mode: {}", error))?;
         }
 
         if errors.len() > 0 {
-            eprintln!("Checking complete! {} errors found", errors.len());
+            error!("Checking complete! {} errors found", errors.len());
             return Err(Box::new(ControllerError::GcodeError(errors)));
         } else {
-            println!("Checking complete! No errors found");
+            info!("Checking complete! No errors found");
         }
     }
 
-    println!("Streaming G-code");
+    info!("Streaming G-code");
 
     buffered_stream(controller, gcode, rx_buffer_size, output_file.as_mut())
-        .map_err(|e| format!("Failed to stream G-code: {}", e))?;
+        .map_err(|error| format!("Failed to stream G-code: {}", error))?;
 
     wait_for_report(
         &controller,
@@ -134,7 +138,9 @@ fn execute_gcode_step(
                 }
             )
         }),
-    );
+    )?;
+
+    info!("Streaming complete");
 
     Ok(())
 }
@@ -150,7 +156,12 @@ fn execute_bash_step(
         .arg("-c")
         .arg(&templated_command)
         .output()
-        .map_err(|e| format!("Failed to execute command '{}': {}", templated_command, e))?;
+        .map_err(|error| {
+            format!(
+                "Failed to execute command '{}': {}",
+                templated_command, error
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -159,41 +170,45 @@ fn execute_bash_step(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !stdout.trim().is_empty() {
-        println!("Command output: {}", stdout.trim());
+        info!("Command output: {}", stdout.trim());
     }
 
     Ok(())
 }
 
-fn main() {
-    let config = CncConfig::load().expect("Failed to load configuration");
+fn main() -> Result<(), String> {
+    env_logger::init();
+
+    let config =
+        CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
 
     let serial = serialport::new(&config.serial.port, config.serial.baudrate)
         .timeout(Duration::from_millis(config.serial.timeout_ms))
         .open()
-        .expect("Failed to open serial connection");
+        .map_err(|error| format!("Failed to open serial connection: {}", error))?;
     let mut serial_clone = serial
         .try_clone()
-        .expect("Failed to clone serial connection");
+        .map_err(|error| format!("Failed to clone serial connection: {}", error))?;
 
     let mut controller = Controller::new();
     let controller_running = controller.running.clone();
     controller.start(serial, config.logs.verbose);
 
     ctrlc::set_handler(move || {
-        println!("Shutting down...");
+        info!("Shutting down...");
         controller_running.store(false, Ordering::Relaxed);
         thread::sleep(Duration::from_secs(2));
-        serial_clone
-            .write_all(&[0x18])
-            .expect("Failed to soft reset Grbl");
+        if let Err(error) = serial_clone.write_all(&[0x18]) {
+            error!("Failed to soft reset Grbl: {}", error);
+        }
     })
-    .expect("Failed to set up exit handler");
+    .map_err(|error| format!("Failed to set up exit handler: {}", error))?;
 
-    let mut gpio_inputs = setup_gpio(&config).expect("Failed to setup GPIO");
+    let mut gpio_inputs =
+        setup_gpio(&config).map_err(|error| format!("Failed to setup GPIO pins: {}", error))?;
 
     let Some((prio_serial_tx, _)) = controller.prio_serial_channel.clone() else {
-        panic!("Failed to init gpio: Controller not started");
+        return Err("Failed to clone serial tx: Controller not started".to_string());
     };
 
     let prio_serial_tx_xy = prio_serial_tx.clone();
@@ -205,12 +220,12 @@ fn main() {
                 config.inputs.probe_xy_limit.debounce_ms,
             )),
             move |_| {
-                prio_serial_tx_xy
-                    .send(Command::Realtime(0x85))
-                    .expect("Failed to send XY probe interrupt");
+                if let Err(error) = prio_serial_tx_xy.send(Command::Realtime(0x85)) {
+                    error!("Failed to send XY probe interrupt signal: {}", error);
+                }
             },
         )
-        .expect("Failed to initialize probe XY interrupt");
+        .map_err(|error| format!("Failed to set probe XY interrupt: {}", error))?;
 
     let prio_serial_tx_z = prio_serial_tx.clone();
     gpio_inputs
@@ -221,38 +236,38 @@ fn main() {
                 config.inputs.probe_z_limit.debounce_ms,
             )),
             move |_| {
-                prio_serial_tx_z
-                    .send(Command::Realtime(0x85))
-                    .expect("Failed to send Z probe interrupt");
+                if let Err(error) = prio_serial_tx_z.send(Command::Realtime(0x85)) {
+                    error!("Failed to send Z probe interrupt signal: {}", error);
+                }
             },
         )
-        .expect("Failed to initialize probe Z interrupt");
+        .map_err(|error| format!("Failed to set probe Z interrupt: {}", error))?;
+
+    gpio_inputs
+        .signal
+        .set_interrupt(
+            Trigger::RisingEdge,
+            Some(Duration::from_millis(config.inputs.signal.debounce_ms)),
+        )
+        .map_err(|error| format!("Failed to set signal interrupt: {}", error))?;
 
     while controller.running.load(Ordering::Relaxed) {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .map_err(|error| format!("Time went backwards: {}", error))?
             .as_secs()
             .to_string();
 
         for (i, step) in config.steps.iter().enumerate() {
             if step.wait_for_signal(i == 0) {
-                gpio_inputs
-                    .signal
-                    .set_interrupt(
-                        Trigger::RisingEdge,
-                        Some(Duration::from_millis(config.inputs.signal.debounce_ms)),
-                    )
-                    .expect("Failed to configure signal interrupt");
-
-                println!("Waiting for start signal...");
+                info!("Waiting for start signal...");
                 gpio_inputs
                     .signal
                     .poll_interrupt(true, None)
-                    .expect("Failed to poll signal interrupt");
+                    .map_err(|error| format!("Failed to poll signal interrupt: {}", error))?;
             }
 
-            println!("Executing step {} (timestamp: {})", i + 1, timestamp);
+            info!("Executing step {} (timestamp: {})", i + 1, timestamp);
 
             let result = match step {
                 Step::Gcode(gcode_step) => execute_gcode_step(
@@ -265,14 +280,15 @@ fn main() {
             };
 
             match result {
-                Ok(()) => println!("Step {} completed successfully", i + 1),
+                Ok(()) => info!("Step {} completed successfully", i + 1),
                 Err(e) => {
-                    eprintln!("Step {} failed: {}", i + 1, e);
-                    eprintln!("Continuing to next step...");
+                    return Err(format!("Step {} failed: {}", i + 1, e));
                 }
             }
         }
 
-        println!("Sequence complete (timestamp: {})", timestamp);
+        info!("Sequence complete (timestamp: {})", timestamp);
     }
+
+    Ok(())
 }
