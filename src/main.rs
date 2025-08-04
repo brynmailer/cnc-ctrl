@@ -1,24 +1,23 @@
 mod config;
 mod controller;
 
-use log::{error, info};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use chrono::Local;
+use log::{LevelFilter, error, info, warn};
 use rppal::gpio::{Gpio, InputPin, Trigger};
+use simplelog::*;
 
 use config::{CncConfig, Step, apply_template, expand_path};
-use controller::Controller;
 use controller::command::Command;
-use controller::message::{Report, Status};
+use controller::message::{Report, Response, Status};
 use controller::serial::{buffered_stream, wait_for_report};
-
-use crate::controller::ControllerError;
-use crate::controller::message::Response;
+use controller::{Controller, ControllerError};
 
 struct GpioInputs {
     signal: InputPin,
@@ -176,8 +175,52 @@ fn execute_bash_step(
     Ok(())
 }
 
+fn setup_logging(config: &CncConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let log_level = if config.logs.verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
+
+    if config.logs.save {
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+
+        let expanded_path = expand_path(&config.logs.path);
+        let templated_path = apply_template(&expanded_path, &timestamp);
+
+        if let Some(parent) = std::path::Path::new(&templated_path).parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let log_file = File::create(&templated_path)
+            .map_err(|e| format!("Failed to create log file '{}': {}", templated_path, e))?;
+
+        CombinedLogger::init(vec![
+            TermLogger::new(
+                log_level,
+                Config::default(),
+                TerminalMode::Mixed,
+                ColorChoice::Auto,
+            ),
+            WriteLogger::new(log_level, Config::default(), log_file),
+        ])?;
+    } else {
+        TermLogger::init(
+            log_level,
+            Config::default(),
+            TerminalMode::Mixed,
+            ColorChoice::Auto,
+        )?;
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
-    env_logger::init();
+    let config =
+        CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
+
+    setup_logging(&config).map_err(|error| format!("Failed to setup logging: {}", error))?;
 
     let config =
         CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
@@ -195,9 +238,11 @@ fn main() -> Result<(), String> {
     controller.start(serial, config.logs.verbose);
 
     ctrlc::set_handler(move || {
-        info!("Shutting down...");
+        warn!("Shutting down...");
+
         controller_running.store(false, Ordering::Relaxed);
         thread::sleep(Duration::from_secs(2));
+
         if let Err(error) = serial_clone.write_all(&[0x18]) {
             error!("Failed to soft reset Grbl: {}", error);
         }
@@ -252,11 +297,7 @@ fn main() -> Result<(), String> {
         .map_err(|error| format!("Failed to set signal interrupt: {}", error))?;
 
     while controller.running.load(Ordering::Relaxed) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("Time went backwards: {}", error))?
-            .as_secs()
-            .to_string();
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
         for (i, step) in config.steps.iter().enumerate() {
             if step.wait_for_signal(i == 0) {
