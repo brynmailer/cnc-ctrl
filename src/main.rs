@@ -233,9 +233,6 @@ fn main() {
 
         println!("Beginning execution");
 
-        println!("Waking up Grbl");
-        // TODO: Add grbl wake up sequence if needed
-
         let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
         buffered_stream(&controller, gcode, Some(&mut file)).expect("Failed to stream G-code");
 
