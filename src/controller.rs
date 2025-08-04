@@ -9,7 +9,8 @@ use std::{sync::Arc, thread};
 
 use crossbeam::channel;
 
-use self::message::Message;
+use command::Command;
+use message::{Message, Push, Response};
 
 #[derive(Debug)]
 pub enum ControllerError {
@@ -27,9 +28,6 @@ impl fmt::Display for ControllerError {
         }
     }
 }
-
-pub use self::command::Command;
-pub use self::message::{Push, Report, Response, Status};
 
 pub struct Controller {
     pub prio_serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Push>)>,

@@ -51,6 +51,8 @@ pub struct GcodeStep {
     pub points: Option<PointsConfig>,
     #[serde(default = "default_wait_for_signal")]
     pub wait_for_signal: bool,
+    #[serde(default = "default_check")]
+    pub check: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +70,10 @@ pub struct PointsConfig {
 }
 
 fn default_wait_for_signal() -> bool {
+    true
+}
+
+fn default_check() -> bool {
     true
 }
 

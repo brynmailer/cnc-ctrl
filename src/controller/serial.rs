@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use regex::Regex;
 
-use super::{Command, Controller, Push, Report, Status};
+use super::Controller;
+use super::command::Command;
+use super::message::{Push, Report, Response, Status};
 
 pub fn wait_for_report<F: Fn(&Report) -> bool>(
     controller: &Controller,
@@ -59,15 +61,29 @@ pub fn buffered_stream(
     gcode: Vec<&str>,
     rx_buffer_size: usize,
     mut file: Option<&mut File>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<(i32, Response)>, Box<dyn std::error::Error>> {
     let Some((serial_tx, serial_rx)) = controller.serial_channel.clone() else {
-        panic!("Failed to stream gcode: Controller not started");
+        panic!("Failed to stream G-code: Controller not started");
     };
 
     let re = Regex::new(r"^\$J=.* IN$")?;
     let mut bytes_queued = VecDeque::new();
     let mut received_count = 0;
     let mut sent_count = 0;
+
+    let mut responses = Vec::new();
+
+    let mut receive = |received_count: &mut i32,
+                       bytes_queued: &mut VecDeque<usize>|
+     -> Result<(), Box<dyn std::error::Error>> {
+        let response = serial_rx.recv()?;
+        *received_count += 1;
+        bytes_queued.pop_front();
+
+        responses.push((*received_count, response));
+
+        Ok(())
+    };
 
     for raw_line in gcode {
         let interruptible = re.is_match(raw_line.trim());
@@ -80,9 +96,7 @@ pub fn buffered_stream(
         bytes_queued.push_back(line.len());
 
         while bytes_queued.iter().sum::<usize>() >= rx_buffer_size {
-            serial_rx.recv()?;
-            received_count += 1;
-            bytes_queued.pop_front();
+            receive(&mut received_count, &mut bytes_queued)?;
         }
 
         serial_tx.send(Command::Gcode(line.to_string()))?;
@@ -118,10 +132,8 @@ pub fn buffered_stream(
     }
 
     while sent_count > received_count {
-        serial_rx.recv()?;
-        received_count += 1;
-        bytes_queued.pop_front();
+        receive(&mut received_count, &mut bytes_queued)?;
     }
 
-    Ok(())
+    Ok(responses)
 }

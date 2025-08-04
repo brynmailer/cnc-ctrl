@@ -1,3 +1,5 @@
+verbose_logging: true
+
 serial:
   port: "/dev/ttyUSB0"
   baudrate: 115200
@@ -20,6 +22,7 @@ inputs:
 steps:
   - type: gcode
     path: "~/cnc/tank/probe.gcode"
+    check: false
     points:
       save: true
       path: "~/cnc/tank/points/tank-{%t}.csv"

@@ -11,8 +11,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rppal::gpio::{Gpio, InputPin, Trigger};
 
 use config::{CncConfig, Step, apply_template, expand_path};
+use controller::Controller;
+use controller::command::Command;
+use controller::message::{Report, Status};
 use controller::serial::{buffered_stream, wait_for_report};
-use controller::{Command, Controller, Report, Status};
+
+use crate::controller::message::Response;
 
 struct GpioInputs {
     signal: InputPin,
@@ -48,13 +52,13 @@ fn execute_gcode_step(
     let templated_path = apply_template(&expanded_path, timestamp);
 
     let file = File::open(&templated_path)
-        .map_err(|e| format!("Failed to open gcode file '{}': {}", templated_path, e))?;
+        .map_err(|e| format!("Failed to open G-code file '{}': {}", templated_path, e))?;
     let reader = BufReader::new(file);
 
     let gcode_lines: Vec<String> = reader
         .lines()
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to read gcode file: {}", e))?;
+        .map_err(|e| format!("Failed to read G-code file: {}", e))?;
 
     let mut output_file = if let Some(points_config) = &step.points {
         if points_config.save {
@@ -76,8 +80,62 @@ fn execute_gcode_step(
     };
 
     let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
+
+    if step.check {
+        println!("Checking G-code");
+
+        if let Some((serial_tx, _)) = controller.serial_channel.clone() {
+            serial_tx
+                .send(Command::Gcode("$C".to_string()))
+                .map_err(|e| format!("Failed to enable check mode: {}", e))?;
+        }
+
+        let responses = buffered_stream(controller, gcode.clone(), rx_buffer_size, None)
+            .map_err(|e| format!("Failed to stream G-code in check mode: {}", e))?;
+
+        let errors: Vec<Response> = responses
+            .iter()
+            .filter_map(|res| {
+                if let Response::Error(_) = res.1 {
+                    eprintln!("Line {} - {}", res.0, res.1);
+                    return Some(res.1);
+                }
+
+                None
+            })
+            .collect();
+
+        if let Some((serial_tx, _)) = controller.serial_channel.clone() {
+            serial_tx
+                .send(Command::Gcode("$C".to_string()))
+                .map_err(|e| format!("Failed to disable check mode: {}", e))?;
+        }
+
+        if errors.len() > 0 {
+            eprintln!("Checking complete! {} errors found", errors.len());
+            std::process::exit(1);
+        } else {
+            eprintln!("Checking complete! No errors found");
+        }
+    }
+
+    println!("Streaming G-code");
+
     buffered_stream(controller, gcode, rx_buffer_size, output_file.as_mut())
         .map_err(|e| format!("Failed to stream G-code: {}", e))?;
+
+    wait_for_report(
+        &controller,
+        Some(|report: &Report| {
+            matches!(
+                report,
+                &Report {
+                    status: Some(Status::Idle),
+                    ..
+                }
+            )
+        }),
+    );
 
     Ok(())
 }
@@ -210,25 +268,9 @@ fn main() {
             match result {
                 Ok(()) => println!("Step {} completed successfully", i + 1),
                 Err(e) => {
-                    // TODO: Implement proper error handling
                     eprintln!("Step {} failed: {}", i + 1, e);
                     eprintln!("Continuing to next step...");
                 }
-            }
-
-            if let Step::Gcode(_) = step {
-                wait_for_report(
-                    &controller,
-                    Some(|report: &Report| {
-                        matches!(
-                            report,
-                            &Report {
-                                status: Some(Status::Idle),
-                                ..
-                            }
-                        )
-                    }),
-                );
             }
         }
 
