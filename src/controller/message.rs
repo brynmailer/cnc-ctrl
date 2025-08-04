@@ -34,7 +34,7 @@ impl From<&str> for Message {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Response {
     Ok,
     Error(u8),

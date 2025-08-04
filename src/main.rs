@@ -16,6 +16,7 @@ use controller::command::Command;
 use controller::message::{Report, Status};
 use controller::serial::{buffered_stream, wait_for_report};
 
+use crate::controller::ControllerError;
 use crate::controller::message::Response;
 
 struct GpioInputs {
@@ -90,20 +91,18 @@ fn execute_gcode_step(
                 .map_err(|e| format!("Failed to enable check mode: {}", e))?;
         }
 
-        let responses = buffered_stream(controller, gcode.clone(), rx_buffer_size, None)
-            .map_err(|e| format!("Failed to stream G-code in check mode: {}", e))?;
-
-        let errors: Vec<Response> = responses
-            .iter()
-            .filter_map(|res| {
-                if let Response::Error(_) = res.1 {
-                    eprintln!("Line {} - {}", res.0, res.1);
-                    return Some(res.1);
-                }
-
-                None
-            })
-            .collect();
+        let errors: Vec<(i32, Response)> =
+            buffered_stream(controller, gcode.clone(), rx_buffer_size, None)
+                .map_err(|e| format!("Failed to stream G-code in check mode: {}", e))?
+                .iter()
+                .filter_map(|res| {
+                    if let Response::Error(_) = res.1 {
+                        Some(*res)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
         if let Some((serial_tx, _)) = controller.serial_channel.clone() {
             serial_tx
@@ -113,9 +112,9 @@ fn execute_gcode_step(
 
         if errors.len() > 0 {
             eprintln!("Checking complete! {} errors found", errors.len());
-            std::process::exit(1);
+            return Err(Box::new(ControllerError::GcodeError(errors)));
         } else {
-            eprintln!("Checking complete! No errors found");
+            println!("Checking complete! No errors found");
         }
     }
 

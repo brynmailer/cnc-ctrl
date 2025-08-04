@@ -15,6 +15,7 @@ use message::{Message, Push, Response};
 #[derive(Debug)]
 pub enum ControllerError {
     ParseError { message: String, input: String },
+    GcodeError(Vec<(i32, Response)>),
 }
 
 impl std::error::Error for ControllerError {}
@@ -24,6 +25,13 @@ impl fmt::Display for ControllerError {
         match self {
             ControllerError::ParseError { message, input } => {
                 write!(f, "Failed to parse '{}'. {}", input, message)
+            }
+            ControllerError::GcodeError(errors) => {
+                for error in errors {
+                    writeln!(f, "Line {} - {}", error.0, error.1)?;
+                }
+
+                Ok(())
             }
         }
     }
