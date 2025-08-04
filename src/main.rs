@@ -1,9 +1,9 @@
 mod config;
 mod controller;
+mod steps;
 
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
-use std::process::Command as ProcessCommand;
+use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
@@ -13,11 +13,9 @@ use log::{LevelFilter, error, info, warn};
 use rppal::gpio::{Gpio, InputPin, Trigger};
 use simplelog::*;
 
-use config::{CncConfig, Step, apply_template, expand_path};
+use config::{CncConfig, apply_template, expand_path};
+use controller::Controller;
 use controller::command::Command;
-use controller::message::{Report, Response, Status};
-use controller::serial::{buffered_stream, wait_for_report};
-use controller::{Controller, ControllerError};
 
 struct GpioInputs {
     signal: InputPin,
@@ -41,138 +39,6 @@ fn setup_gpio(config: &CncConfig) -> Result<GpioInputs, Box<dyn std::error::Erro
         probe_xy,
         probe_z,
     })
-}
-
-fn execute_gcode_step(
-    step: &config::GcodeStep,
-    controller: &Controller,
-    timestamp: &str,
-    rx_buffer_size: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let expanded_path = expand_path(&step.path);
-    let templated_path = apply_template(&expanded_path, timestamp);
-
-    let file = File::open(&templated_path)
-        .map_err(|error| format!("Failed to open G-code file '{}': {}", templated_path, error))?;
-    let reader = BufReader::new(file);
-
-    let gcode_lines: Vec<String> = reader
-        .lines()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Failed to read G-code file: {}", error))?;
-
-    let mut output_file = if let Some(points_config) = &step.points {
-        if points_config.save {
-            let expanded_output = expand_path(&points_config.path);
-            let templated_output = apply_template(&expanded_output, timestamp);
-
-            if let Some(parent) = std::path::Path::new(&templated_output).parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            Some(File::create(&templated_output).map_err(|error| {
-                format!(
-                    "Failed to create output file '{}': {}",
-                    templated_output, error
-                )
-            })?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
-
-    if step.check {
-        info!("Checking G-code");
-
-        if let Some((serial_tx, _)) = controller.serial_channel.clone() {
-            serial_tx
-                .send(Command::Gcode("$C".to_string()))
-                .map_err(|error| format!("Failed to enable check mode: {}", error))?;
-        }
-
-        let errors: Vec<(i32, Response)> =
-            buffered_stream(controller, gcode.clone(), rx_buffer_size, None)
-                .map_err(|error| format!("Failed to stream G-code in check mode: {}", error))?
-                .iter()
-                .filter_map(|res| {
-                    if let Response::Error(_) = res.1 {
-                        Some(*res)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-        if let Some((serial_tx, _)) = controller.serial_channel.clone() {
-            serial_tx
-                .send(Command::Gcode("$C".to_string()))
-                .map_err(|error| format!("Failed to disable check mode: {}", error))?;
-        }
-
-        if errors.len() > 0 {
-            error!("Checking complete! {} errors found", errors.len());
-            return Err(Box::new(ControllerError::GcodeError(errors)));
-        } else {
-            info!("Checking complete! No errors found");
-        }
-    }
-
-    info!("Streaming G-code");
-
-    buffered_stream(controller, gcode, rx_buffer_size, output_file.as_mut())
-        .map_err(|error| format!("Failed to stream G-code: {}", error))?;
-
-    wait_for_report(
-        &controller,
-        Some(|report: &Report| {
-            matches!(
-                report,
-                &Report {
-                    status: Some(Status::Idle),
-                    ..
-                }
-            )
-        }),
-    )?;
-
-    info!("Streaming complete");
-
-    Ok(())
-}
-
-fn execute_bash_step(
-    step: &config::BashStep,
-    timestamp: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let expanded_command = expand_path(&step.command);
-    let templated_command = apply_template(&expanded_command, timestamp);
-
-    let output = ProcessCommand::new("sh")
-        .arg("-c")
-        .arg(&templated_command)
-        .output()
-        .map_err(|error| {
-            format!(
-                "Failed to execute command '{}': {}",
-                templated_command, error
-            )
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Command failed: {}", stderr).into());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.trim().is_empty() {
-        info!("Command output: {}", stdout.trim());
-    }
-
-    Ok(())
 }
 
 fn setup_logging(config: &CncConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -300,7 +166,7 @@ fn main() -> Result<(), String> {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
         for (i, step) in config.steps.iter().enumerate() {
-            if step.wait_for_signal(i == 0) {
+            if i == 0 || step.should_wait() {
                 info!("Waiting for start signal...");
                 gpio_inputs
                     .signal
@@ -310,15 +176,7 @@ fn main() -> Result<(), String> {
 
             info!("Executing step {} (timestamp: {})", i + 1, timestamp);
 
-            let result = match step {
-                Step::Gcode(gcode_step) => execute_gcode_step(
-                    gcode_step,
-                    &controller,
-                    &timestamp,
-                    config.grbl.rx_buffer_size_bytes,
-                ),
-                Step::Bash(bash_step) => execute_bash_step(bash_step, &timestamp),
-            };
+            let result = step.execute(&controller, &timestamp, &config);
 
             match result {
                 Ok(()) => info!("Step {} completed successfully", i + 1),

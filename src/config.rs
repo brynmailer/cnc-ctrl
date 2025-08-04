@@ -3,6 +3,8 @@ use std::env;
 use config::{Config, File};
 use serde::Deserialize;
 
+use super::steps::Step;
+
 #[derive(Debug, Deserialize)]
 pub struct CncConfig {
     pub logs: LogsConfig,
@@ -45,44 +47,10 @@ pub struct InputPin {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-pub enum Step {
-    #[serde(rename = "gcode")]
-    Gcode(GcodeStep),
-    #[serde(rename = "bash")]
-    Bash(BashStep),
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GcodeStep {
-    pub path: String,
-    pub points: Option<PointsConfig>,
-    #[serde(default = "default_wait_for_signal")]
-    pub wait_for_signal: bool,
-    #[serde(default = "default_check")]
-    pub check: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BashStep {
-    pub command: String,
-    #[serde(default)]
-    pub wait_for_signal: bool,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct PointsConfig {
     #[serde(default)]
     pub save: bool,
     pub path: String,
-}
-
-fn default_wait_for_signal() -> bool {
-    true
-}
-
-fn default_check() -> bool {
-    true
 }
 
 impl CncConfig {
@@ -102,27 +70,6 @@ impl CncConfig {
         let config_path = home_dir.join(".config").join("cnc-ctrl").join("config.yml");
 
         Ok(config_path.to_string_lossy().to_string())
-    }
-}
-
-impl Step {
-    pub fn wait_for_signal(&self, is_first: bool) -> bool {
-        match self {
-            Step::Gcode(step) => {
-                if is_first {
-                    true
-                } else {
-                    step.wait_for_signal
-                }
-            }
-            Step::Bash(step) => {
-                if is_first {
-                    true
-                } else {
-                    step.wait_for_signal
-                }
-            }
-        }
     }
 }
 
