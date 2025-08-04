@@ -50,7 +50,10 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
                     polling.store(false, Ordering::Relaxed);
                     return Some(report);
                 }
-                Err(err) => panic!("Failed to wait for interrupt: {}", err),
+                Err(err) => {
+                    eprintln!("Failed to wait for interrupt: {}", err);
+                    return None;
+                }
             }
         }
     })

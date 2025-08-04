@@ -55,7 +55,7 @@ impl Controller {
         }
     }
 
-    pub fn start(&mut self, serial: Box<dyn serialport::SerialPort>) {
+    pub fn start(&mut self, serial: Box<dyn serialport::SerialPort>, verbose_logging: bool) {
         let mut writer = io::BufWriter::new(serial.try_clone().unwrap());
         let mut reader = io::BufReader::new(serial.try_clone().unwrap());
 
@@ -67,6 +67,7 @@ impl Controller {
 
         let send_running = self.running.clone();
         let recv_running = self.running.clone();
+
         self.running.store(true, Ordering::Relaxed);
 
         fn log_err<R, T: std::error::Error>(err: T) -> Result<R, T> {
@@ -75,8 +76,14 @@ impl Controller {
         }
 
         let send_handle = thread::spawn(move || {
-            fn send(writer: &mut io::BufWriter<Box<dyn serialport::SerialPort>>, command: Command) {
-                println!("SND > {}", command);
+            fn send(
+                writer: &mut io::BufWriter<Box<dyn serialport::SerialPort>>,
+                command: Command,
+                verbose: bool,
+            ) {
+                if verbose {
+                    println!("Serial (SND) > {}", command);
+                }
 
                 match command {
                     Command::Gcode(gcode) => {
@@ -94,11 +101,11 @@ impl Controller {
 
             while send_running.load(Ordering::Relaxed) {
                 if let Ok(command) = prio_send_rx.try_recv() {
-                    send(&mut writer, command);
+                    send(&mut writer, command, verbose_logging);
                 }
 
                 if let Ok(command) = send_rx.try_recv() {
-                    send(&mut writer, command);
+                    send(&mut writer, command, verbose_logging);
                 }
             }
         });
@@ -108,7 +115,10 @@ impl Controller {
                 let mut response = String::new();
                 let _ = reader.read_line(&mut response).or_else(log_err);
                 let message = Message::from(response.trim());
-                println!("RECV < {}", message);
+
+                if verbose_logging {
+                    println!("Serial (RECV) < {}", message);
+                }
 
                 match message {
                     Message::Push(push) => {

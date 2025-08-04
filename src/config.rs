@@ -5,10 +5,18 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct CncConfig {
+    pub logs: LogsConfig,
     pub serial: SerialConfig,
     pub grbl: GrblConfig,
     pub inputs: InputsConfig,
     pub steps: Vec<Step>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogsConfig {
+    pub verbose: bool,
+    pub save: bool,
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,18 +88,17 @@ fn default_check() -> bool {
 impl CncConfig {
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let config_path = Self::get_config_path()?;
-
         let settings = Config::builder()
             .add_source(File::with_name(&config_path))
             .build()?;
 
         let config: CncConfig = settings.try_deserialize()?;
+
         Ok(config)
     }
 
     fn get_config_path() -> Result<String, Box<dyn std::error::Error>> {
         let home_dir = env::home_dir().ok_or("Failed to get home directory")?;
-
         let config_path = home_dir.join(".config").join("cnc-ctrl").join("config.yml");
 
         Ok(config_path.to_string_lossy().to_string())

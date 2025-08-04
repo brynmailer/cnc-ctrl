@@ -1,4 +1,7 @@
-verbose_logging: true
+logs:
+  verbose: true
+  save: true
+  path: "~/cnc/logs/{%t}"
 
 serial:
   port: "/dev/ttyUSB0"
@@ -21,15 +24,15 @@ inputs:
 
 steps:
   - type: gcode
-    path: "~/cnc/tank/probe.gcode"
+    path: "~/cnc/tanks/probe.gcode"
     check: false
     points:
       save: true
-      path: "~/cnc/tank/points/tank-{%t}.csv"
+      path: "~/cnc/tanks/points/tank-{%t}.csv"
 
   - type: bash
     wait_for_signal: false
-    command: "python ~/cnc/tank/transform.py -p ~/cnc/tank/points/tank-{%t}.csv -o ~/cnc/tank/cut.gcode"
+    command: "python ~/cnc/tanks/transform.py -p ~/cnc/tanks/points/tank-{%t}.csv -o ~/cnc/tanks/cut.gcode"
 
   - type: gcode
-    path: "~/cnc/tank/cut.gcode"
+    path: "~/cnc/tanks/cut.gcode"

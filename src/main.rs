@@ -178,7 +178,7 @@ fn main() {
 
     let mut controller = Controller::new();
     let controller_running = controller.running.clone();
-    controller.start(serial);
+    controller.start(serial, config.logs.verbose);
 
     ctrlc::set_handler(move || {
         println!("Shutting down...");
