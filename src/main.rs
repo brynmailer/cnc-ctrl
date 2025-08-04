@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rppal::gpio::{Gpio, InputPin, Trigger};
 
-use config::{CncConfig, Step, apply_template, expand_path, generate_timestamp};
+use config::{CncConfig, Step, apply_template, expand_path};
 use controller::serial::{buffered_stream, wait_for_report};
 use controller::{Command, Controller, Report, Status};
 

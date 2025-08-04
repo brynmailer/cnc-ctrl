@@ -13,7 +13,6 @@ use self::message::Message;
 
 #[derive(Debug)]
 pub enum ControllerError {
-    SerialError(std::io::Error),
     ParseError { message: String, input: String },
 }
 
@@ -22,7 +21,6 @@ impl std::error::Error for ControllerError {}
 impl fmt::Display for ControllerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ControllerError::SerialError(err) => write!(f, "Serial communication error: {}", err),
             ControllerError::ParseError { message, input } => {
                 write!(f, "Failed to parse '{}'. {}", input, message)
             }
@@ -72,6 +70,8 @@ impl Controller {
 
         let send_handle = thread::spawn(move || {
             fn send(writer: &mut io::BufWriter<Box<dyn serialport::SerialPort>>, command: Command) {
+                println!("SND > {}", command);
+
                 match command {
                     Command::Gcode(gcode) => {
                         let _ = writer
@@ -88,12 +88,10 @@ impl Controller {
 
             while send_running.load(Ordering::Relaxed) {
                 if let Ok(command) = prio_send_rx.try_recv() {
-                    println!("SND: {}", command);
                     send(&mut writer, command);
                 }
 
                 if let Ok(command) = send_rx.try_recv() {
-                    println!("SND: {}", command);
                     send(&mut writer, command);
                 }
             }
@@ -103,18 +101,17 @@ impl Controller {
             while recv_running.load(Ordering::Relaxed) {
                 let mut response = String::new();
                 let _ = reader.read_line(&mut response).or_else(log_err);
-                response = response.trim().to_string();
+                let message = Message::from(response.trim());
+                println!("RECV < {}", message);
 
-                match Message::from(response.as_str()) {
+                match message {
                     Message::Push(push) => {
-                        println!("RECV: PUSH '{}'", response);
                         let _ = prio_recv_tx.try_send(push);
                     }
                     Message::Response(res) => {
-                        println!("RECV: RESPONSE '{}'", response);
                         recv_tx.send(res).unwrap();
                     }
-                    Message::Unknown(msg) => println!("RECV: UNKNOWN < {}", msg),
+                    _ => continue,
                 }
             }
         });

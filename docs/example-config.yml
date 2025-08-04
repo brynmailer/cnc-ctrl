@@ -20,7 +20,6 @@ inputs:
 steps:
   - type: gcode
     path: "~/cnc/tank/probe.gcode"
-    probe: true
     points:
       save: true
       path: "~/cnc/tank/points/tank-{%t}.csv"

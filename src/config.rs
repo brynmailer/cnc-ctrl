@@ -48,8 +48,6 @@ pub enum Step {
 #[derive(Debug, Deserialize)]
 pub struct GcodeStep {
     pub path: String,
-    #[serde(default)]
-    pub probe: bool,
     pub points: Option<PointsConfig>,
     #[serde(default = "default_wait_for_signal")]
     pub wait_for_signal: bool,
