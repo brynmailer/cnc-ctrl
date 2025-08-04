@@ -1,173 +1,118 @@
-mod command;
+mod config;
 mod controller;
-mod message;
 
-use std::collections::VecDeque;
-use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::Command as ProcessCommand;
+use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use regex::Regex;
-use rppal::gpio::{Gpio, Trigger};
+use rppal::gpio::{Gpio, InputPin, Trigger};
 
-use command::Command;
-use controller::Controller;
-use message::{Push, Report, Status};
+use config::{CncConfig, Step, apply_template, expand_path, generate_timestamp};
+use controller::serial::{buffered_stream, wait_for_report};
+use controller::{Command, Controller, Report, Status};
 
-// Serial
-const PORT: &str = "/dev/ttyUSB0";
-const BAUDRATE: u32 = 115200;
-const TIMEOUT_MS: u64 = 60000;
+struct GpioInputs {
+    signal: InputPin,
+    probe_xy: InputPin,
+    probe_z: InputPin,
+}
 
-// GPIO
-const CTRL_PIN: u8 = 22;
-const PROBE_XY_PIN: u8 = 27;
+fn setup_gpio(config: &CncConfig) -> Result<GpioInputs, Box<dyn std::error::Error>> {
+    let gpio = Gpio::new()?;
 
-// GbrlHAL
-const RX_BUFFER_SIZE: usize = 1024;
+    let signal = gpio.get(config.inputs.signal.pin)?.into_input_pullup();
+    let probe_xy = gpio
+        .get(config.inputs.probe_xy_limit.pin)?
+        .into_input_pullup();
+    let probe_z = gpio
+        .get(config.inputs.probe_z_limit.pin)?
+        .into_input_pullup();
 
-fn wait_for_report<F: Fn(&Report) -> bool>(
-    controller: &Controller,
-    predicate: Option<F>,
-) -> Option<Report> {
-    let Some((prio_serial_tx, prio_serial_rx)) = controller.prio_serial_channel.clone() else {
-        panic!("Failed to clone serial: Controller not started");
-    };
-
-    let polling = Arc::new(AtomicBool::new(true));
-    let running = controller.running.clone();
-
-    thread::scope(|scope| {
-        scope.spawn(|| {
-            while polling.load(Ordering::Relaxed) {
-                prio_serial_tx
-                    .send(Command::Realtime(b'?'))
-                    .expect("Failed to poll grbl status report");
-
-                thread::sleep(Duration::from_millis(200));
-            }
-        });
-
-        loop {
-            if !running.load(Ordering::Relaxed) {
-                return None;
-            }
-
-            match prio_serial_rx.recv() {
-                Ok(Push::Report(report)) => {
-                    if let Some(matcher) = &predicate {
-                        if !matcher(&report) {
-                            continue;
-                        }
-                    }
-
-                    polling.store(false, Ordering::Relaxed);
-                    return Some(report);
-                }
-                Err(err) => panic!("Failed to wait for interrupt: {}", err),
-            }
-        }
+    Ok(GpioInputs {
+        signal,
+        probe_xy,
+        probe_z,
     })
 }
 
-fn buffered_stream(
+fn execute_gcode_step(
+    step: &config::GcodeStep,
     controller: &Controller,
-    gcode: Vec<&str>,
-    mut file: Option<&File>,
+    timestamp: &str,
+    rx_buffer_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some((serial_tx, serial_rx)) = controller.serial_channel.clone() else {
-        panic!("Failed to stream gcode: Controller not started");
+    let expanded_path = expand_path(&step.path);
+    let templated_path = apply_template(&expanded_path, timestamp);
+
+    let file = File::open(&templated_path)
+        .map_err(|e| format!("Failed to open gcode file '{}': {}", templated_path, e))?;
+    let reader = BufReader::new(file);
+
+    let gcode_lines: Vec<String> = reader
+        .lines()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read gcode file: {}", e))?;
+
+    let mut output_file = if let Some(points_config) = &step.points {
+        if points_config.save {
+            let expanded_output = expand_path(&points_config.path);
+            let templated_output = apply_template(&expanded_output, timestamp);
+
+            if let Some(parent) = std::path::Path::new(&templated_output).parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            Some(File::create(&templated_output).map_err(|e| {
+                format!("Failed to create output file '{}': {}", templated_output, e)
+            })?)
+        } else {
+            None
+        }
+    } else {
+        None
     };
 
-    let re = Regex::new(r"^\$J=.* IN$")?;
-    let mut bytes_queued = VecDeque::new();
-    let mut received_count = 0;
-    let mut sent_count = 0;
+    let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
+    buffered_stream(controller, gcode, rx_buffer_size, output_file.as_mut())
+        .map_err(|e| format!("Failed to stream G-code: {}", e))?;
 
-    for raw_line in gcode {
-        let interruptible = re.is_match(raw_line.trim());
-        let line = if interruptible {
-            raw_line.trim().strip_suffix(" IN").unwrap()
-        } else {
-            raw_line.trim()
-        };
+    Ok(())
+}
 
-        bytes_queued.push_back(line.len());
+fn execute_bash_step(
+    step: &config::BashStep,
+    timestamp: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let expanded_command = expand_path(&step.command);
+    let templated_command = apply_template(&expanded_command, timestamp);
 
-        while bytes_queued.iter().sum::<usize>() >= RX_BUFFER_SIZE {
-            serial_rx.recv()?;
-            received_count += 1;
-            bytes_queued.pop_front();
-        }
+    let output = ProcessCommand::new("sh")
+        .arg("-c")
+        .arg(&templated_command)
+        .output()
+        .map_err(|e| format!("Failed to execute command '{}': {}", templated_command, e))?;
 
-        serial_tx.send(Command::Gcode(line.to_string()))?;
-        sent_count += 1;
-
-        if interruptible {
-            if let Some(report) = wait_for_report(
-                controller,
-                Some(|report: &Report| {
-                    matches!(
-                        report,
-                        &Report {
-                            status: Some(Status::Idle),
-                            mpos: Some(_),
-                            ..
-                        }
-                    )
-                }),
-            ) {
-                let unwrapped_mpos = report.mpos.unwrap();
-                println!(
-                    "X{} Y{} Z{}",
-                    unwrapped_mpos.0, unwrapped_mpos.1, unwrapped_mpos.2
-                );
-
-                if let Some(file) = &mut file {
-                    file.write_all(
-                        format!(
-                            "X{} Y{} Z{}\n",
-                            unwrapped_mpos.0, unwrapped_mpos.1, unwrapped_mpos.2
-                        )
-                        .as_bytes(),
-                    )
-                    .expect("Failed to write point to file");
-                }
-            }
-        }
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Command failed: {}", stderr).into());
     }
 
-    while sent_count > received_count {
-        serial_rx.recv()?;
-        received_count += 1;
-        bytes_queued.pop_front();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.trim().is_empty() {
+        println!("Command output: {}", stdout.trim());
     }
 
     Ok(())
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <gcode_file>", args[0]);
-        std::process::exit(1);
-    }
+    let config = CncConfig::load().expect("Failed to load configuration");
 
-    let gcode_file_path = &args[1];
-    let file = File::open(gcode_file_path).expect("Failed to open gcode file");
-    let reader = BufReader::new(file);
-
-    let gcode_lines: Vec<String> = reader
-        .lines()
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Failed to read gcode file");
-
-    let serial = serialport::new(PORT, BAUDRATE)
-        .timeout(Duration::from_millis(TIMEOUT_MS))
+    let serial = serialport::new(&config.serial.port, config.serial.baudrate)
+        .timeout(Duration::from_millis(config.serial.timeout_ms))
         .open()
         .expect("Failed to open serial connection");
     let mut serial_clone = serial
@@ -188,67 +133,105 @@ fn main() {
     })
     .expect("Failed to set up exit handler");
 
-    let gpio = Gpio::new().expect("Failed to intialize GPIO");
-    let mut ctrl = gpio
-        .get(CTRL_PIN)
-        .expect("Failed to initialize ctrl")
-        .into_input_pullup();
-    let mut probe_xy = gpio
-        .get(PROBE_XY_PIN)
-        .expect("Failed to initialize probe xy")
-        .into_input_pullup();
+    let mut gpio_inputs = setup_gpio(&config).expect("Failed to setup GPIO");
 
-    ctrl.set_interrupt(Trigger::RisingEdge, Some(Duration::from_millis(30)))
-        .expect("Failed to initialize start signal interrupt");
-
-    let Some((serial_tx, _)) = controller.prio_serial_channel.clone() else {
+    let Some((prio_serial_tx, _)) = controller.prio_serial_channel.clone() else {
         panic!("Failed to init gpio: Controller not started");
     };
-    probe_xy
+
+    let prio_serial_tx_xy = prio_serial_tx.clone();
+    gpio_inputs
+        .probe_xy
         .set_async_interrupt(
             Trigger::RisingEdge,
-            Some(Duration::from_millis(30)),
+            Some(Duration::from_millis(
+                config.inputs.probe_xy_limit.debounce_ms,
+            )),
             move |_| {
-                serial_tx
+                prio_serial_tx_xy
                     .send(Command::Realtime(0x85))
-                    .expect("Failed to send interrupt command");
+                    .expect("Failed to send XY probe interrupt");
             },
         )
-        .expect("Failed to initialize probe xy interrupt");
+        .expect("Failed to initialize probe XY interrupt");
 
-    let mut file_suffix = 0;
-    let mut file = loop {
-        if let Ok(result) = File::create_new(format!("/home/admin/points/tank-{}", file_suffix)) {
-            break result;
-        } else {
-            file_suffix += 1;
-            continue;
-        }
-    };
+    let prio_serial_tx_z = prio_serial_tx.clone();
+    gpio_inputs
+        .probe_z
+        .set_async_interrupt(
+            Trigger::RisingEdge,
+            Some(Duration::from_millis(
+                config.inputs.probe_z_limit.debounce_ms,
+            )),
+            move |_| {
+                prio_serial_tx_z
+                    .send(Command::Realtime(0x85))
+                    .expect("Failed to send Z probe interrupt");
+            },
+        )
+        .expect("Failed to initialize probe Z interrupt");
 
     while controller.running.load(Ordering::Relaxed) {
-        println!("Waiting for start signal...");
-        ctrl.poll_interrupt(true, None)
-            .expect("Failed to poll button interrupt");
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs()
+            .to_string();
 
-        println!("Beginning execution");
+        for (i, step) in config.steps.iter().enumerate() {
+            if step.wait_for_signal(i == 0) {
+                gpio_inputs
+                    .signal
+                    .set_interrupt(
+                        Trigger::RisingEdge,
+                        Some(Duration::from_millis(config.inputs.signal.debounce_ms)),
+                    )
+                    .expect("Failed to configure signal interrupt");
 
-        let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
-        buffered_stream(&controller, gcode, Some(&mut file)).expect("Failed to stream G-code");
+                println!("Waiting for start signal...");
+                gpio_inputs
+                    .signal
+                    .poll_interrupt(true, None)
+                    .expect("Failed to poll signal interrupt");
+            }
 
-        wait_for_report(
-            &controller,
-            Some(|report: &Report| {
-                matches!(
-                    report,
-                    &Report {
-                        status: Some(Status::Idle),
-                        ..
-                    }
-                )
-            }),
-        );
+            println!("Executing step {} (timestamp: {})", i + 1, timestamp);
 
-        println!("Execution complete");
+            let result = match step {
+                Step::Gcode(gcode_step) => execute_gcode_step(
+                    gcode_step,
+                    &controller,
+                    &timestamp,
+                    config.grbl.rx_buffer_size_bytes,
+                ),
+                Step::Bash(bash_step) => execute_bash_step(bash_step, &timestamp),
+            };
+
+            match result {
+                Ok(()) => println!("Step {} completed successfully", i + 1),
+                Err(e) => {
+                    // TODO: Implement proper error handling
+                    eprintln!("Step {} failed: {}", i + 1, e);
+                    eprintln!("Continuing to next step...");
+                }
+            }
+
+            if let Step::Gcode(_) = step {
+                wait_for_report(
+                    &controller,
+                    Some(|report: &Report| {
+                        matches!(
+                            report,
+                            &Report {
+                                status: Some(Status::Idle),
+                                ..
+                            }
+                        )
+                    }),
+                );
+            }
+        }
+
+        println!("Sequence complete (timestamp: {})", timestamp);
     }
 }

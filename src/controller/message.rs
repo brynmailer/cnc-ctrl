@@ -1,6 +1,6 @@
 use regex::Regex;
 
-use crate::controller::ControllerError;
+use super::ControllerError;
 
 pub enum Message {
     Response(Response),

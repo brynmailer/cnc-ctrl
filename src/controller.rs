@@ -1,3 +1,7 @@
+pub mod command;
+pub mod message;
+pub mod serial;
+
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -5,8 +9,7 @@ use std::{sync::Arc, thread};
 
 use crossbeam::channel;
 
-use crate::command::Command;
-use crate::message::{Message, Push, Response};
+use self::message::Message;
 
 #[derive(Debug)]
 pub enum ControllerError {
@@ -26,6 +29,9 @@ impl fmt::Display for ControllerError {
         }
     }
 }
+
+pub use self::command::Command;
+pub use self::message::{Push, Report, Response, Status};
 
 pub struct Controller {
     pub prio_serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Push>)>,

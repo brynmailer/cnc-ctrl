@@ -1,0 +1,33 @@
+serial:
+  port: "/dev/ttyUSB0"
+  baudrate: 115200
+  timeout_ms: 60000
+
+grbl:
+  rx_buffer_size_bytes: 1024
+
+inputs:
+  signal:
+    pin: 17
+    debounce_ms: 30
+  probe_xy:
+    pin: 27
+    debounce_ms: 30
+  probe_z:
+    pin: 22
+    debounce_ms: 30
+
+steps:
+  - type: gcode
+    path: "~/cnc/tank/probe.gcode"
+    probe: true
+    points:
+      save: true
+      path: "~/cnc/tank/points/tank-{%t}.csv"
+
+  - type: bash
+    wait_for_signal: false
+    command: "python ~/cnc/tank/transform.py -p ~/cnc/tank/points/tank-{%t}.csv -o ~/cnc/tank/cut.gcode"
+
+  - type: gcode
+    path: "~/cnc/tank/cut.gcode"
