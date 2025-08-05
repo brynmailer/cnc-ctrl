@@ -1,6 +1,9 @@
 mod bash;
 mod gcode;
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use serde::Deserialize;
 
 use super::config::{CncConfig, PointsConfig};
@@ -56,6 +59,7 @@ impl Step {
         controller: &Controller,
         timestamp: &str,
         config: &CncConfig,
+        executing: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match self {
             Step::Gcode(step) => execute_gcode_step(
@@ -63,6 +67,7 @@ impl Step {
                 controller,
                 timestamp,
                 config.grbl.rx_buffer_size_bytes,
+                executing,
             ),
             Step::Bash(step) => execute_bash_step(step, timestamp),
         }

@@ -4,7 +4,8 @@ mod steps;
 
 use std::fs::{self, File};
 use std::io::Write;
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -79,6 +80,8 @@ fn setup_logging(config: &CncConfig) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), String> {
+    let executing = Arc::new(AtomicBool::new(true));
+
     let config =
         CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
 
@@ -97,11 +100,11 @@ fn main() -> Result<(), String> {
     let mut serial_clone = serial
         .try_clone()
         .map_err(|error| format!("Failed to clone serial connection: {}", error))?;
-    let controller_running = controller.running.clone();
+    let executing_clone = executing.clone();
     ctrlc::set_handler(move || {
         warn!("Shutting down...");
 
-        controller_running.store(false, Ordering::Relaxed);
+        executing_clone.store(false, Ordering::Relaxed);
         thread::sleep(Duration::from_secs(2));
 
         if let Err(error) = serial_clone.write_all(&[0x18]) {
@@ -149,7 +152,7 @@ fn main() -> Result<(), String> {
         )
         .map_err(|error| format!("Failed to set signal interrupt: {}", error))?;
 
-    loop {
+    while executing.load(Ordering::Relaxed) {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
         for (i, step) in config.steps.iter().enumerate() {
@@ -170,7 +173,7 @@ fn main() -> Result<(), String> {
                 config.logs.verbose,
             );
 
-            let result = step.execute(&controller, &timestamp, &config);
+            let result = step.execute(&controller, &timestamp, &config, executing.clone());
 
             controller.disconnect();
 
@@ -184,4 +187,6 @@ fn main() -> Result<(), String> {
 
         info!("Sequence complete (timestamp: {})", timestamp);
     }
+
+    Ok(())
 }

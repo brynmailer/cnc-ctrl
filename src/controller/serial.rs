@@ -16,6 +16,7 @@ use super::{Controller, ControllerError};
 pub fn wait_for_report<F: Fn(&Report) -> bool>(
     controller: &Controller,
     predicate: Option<F>,
+    executing: Arc<AtomicBool>,
 ) -> Result<Option<Report>, ControllerError> {
     let (prio_serial_tx, prio_serial_rx) = controller.prio_serial.clone();
 
@@ -23,7 +24,7 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
 
     Ok(thread::scope(|scope| {
         scope.spawn(|| {
-            while polling.load(Ordering::Relaxed) && controller.running.load(Ordering::Relaxed) {
+            while polling.load(Ordering::Relaxed) && executing.load(Ordering::Relaxed) {
                 if let Err(error) = prio_serial_tx.send(Command::Realtime(b'?')) {
                     error!("Failed to poll status report: {}", error);
                 }
@@ -32,7 +33,7 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
             }
         });
 
-        while controller.running.load(Ordering::Relaxed) {
+        while executing.load(Ordering::Relaxed) {
             match prio_serial_rx.recv() {
                 Ok(Push::Report(report)) => {
                     if let Some(matcher) = &predicate {
@@ -62,6 +63,7 @@ pub fn buffered_stream(
     gcode: Vec<&str>,
     rx_buffer_size: usize,
     mut file: Option<&mut File>,
+    executing: Arc<AtomicBool>,
 ) -> Result<Vec<(i32, Response)>, ControllerError> {
     let (serial_tx, serial_rx) = controller.serial.clone();
 
@@ -121,6 +123,7 @@ pub fn buffered_stream(
                         }
                     )
                 }),
+                executing.clone(),
             )?;
 
             if let Some(report) = report {
