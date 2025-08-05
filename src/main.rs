@@ -149,7 +149,7 @@ fn main() -> Result<(), String> {
         )
         .map_err(|error| format!("Failed to set signal interrupt: {}", error))?;
 
-    while controller.running.load(Ordering::Relaxed) {
+    loop {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
         for (i, step) in config.steps.iter().enumerate() {
@@ -184,6 +184,4 @@ fn main() -> Result<(), String> {
 
         info!("Sequence complete (timestamp: {})", timestamp);
     }
-
-    Ok(())
 }
