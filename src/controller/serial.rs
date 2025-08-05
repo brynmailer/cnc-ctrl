@@ -58,6 +58,8 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
             }
         }
 
+        polling.store(false, Ordering::Relaxed);
+
         Ok(None)
     })?)
 }
