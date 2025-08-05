@@ -25,6 +25,7 @@ pub struct LogsConfig {
 pub struct SerialConfig {
     pub port: String,
     pub baudrate: u32,
+    pub timeout_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]

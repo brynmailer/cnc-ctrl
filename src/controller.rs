@@ -43,32 +43,44 @@ impl fmt::Display for ControllerError {
 }
 
 pub struct Controller {
-    pub prio_serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Push>)>,
-    pub serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Response>)>,
-    pub running: Arc<AtomicBool>,
+    pub prio_serial: (channel::Sender<Command>, channel::Receiver<Push>),
+    prio_serial_internal: (channel::Sender<Push>, channel::Receiver<Command>),
+
+    pub serial: (channel::Sender<Command>, channel::Receiver<Response>),
+    serial_internal: (channel::Sender<Response>, channel::Receiver<Command>),
 
     serial_handles: Option<(thread::JoinHandle<()>, thread::JoinHandle<()>)>,
+
+    pub running: Arc<AtomicBool>,
 }
 
 impl Controller {
     pub fn new() -> Self {
+        let (prio_send_tx, prio_send_rx) = channel::bounded(0);
+        let (prio_recv_tx, prio_recv_rx) = channel::bounded(0);
+
+        let (send_tx, send_rx) = channel::bounded(0);
+        let (recv_tx, recv_rx) = channel::unbounded();
+
         Self {
-            prio_serial_channel: None,
-            serial_channel: None,
+            prio_serial: (prio_send_tx, prio_recv_rx),
+            prio_serial_internal: (prio_recv_tx, prio_send_rx),
+
+            serial: (send_tx, recv_rx),
+            serial_internal: (recv_tx, send_rx),
+
             serial_handles: None,
+
             running: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn start(&mut self, serial: Box<dyn serialport::SerialPort>, verbose_logging: bool) {
+    pub fn connect(&mut self, serial: Box<dyn serialport::SerialPort>, verbose_logging: bool) {
         let mut writer = io::BufWriter::new(serial.try_clone().unwrap());
         let mut reader = io::BufReader::new(serial.try_clone().unwrap());
 
-        let (prio_send_tx, prio_send_rx) = channel::bounded(0);
-        let (send_tx, send_rx) = channel::bounded(0);
-
-        let (prio_recv_tx, prio_recv_rx) = channel::bounded(0);
-        let (recv_tx, recv_rx) = channel::unbounded();
+        let (prio_recv_tx, prio_send_rx) = self.prio_serial_internal.clone();
+        let (recv_tx, send_rx) = self.serial_internal.clone();
 
         let send_running = self.running.clone();
         let recv_running = self.running.clone();
@@ -137,26 +149,21 @@ impl Controller {
             }
         });
 
-        self.prio_serial_channel = Some((prio_send_tx, prio_recv_rx));
-        self.serial_channel = Some((send_tx, recv_rx));
         self.serial_handles = Some((send_handle, recv_handle));
     }
 
-    pub fn stop(&mut self) {
+    pub fn disconnect(&mut self) {
         if let Some((send_handle, recv_handle)) = self.serial_handles.take() {
             self.running.store(false, Ordering::Relaxed);
 
             let _ = send_handle.join();
             let _ = recv_handle.join();
-
-            self.prio_serial_channel.take();
-            self.serial_channel.take();
         }
     }
 }
 
 impl Drop for Controller {
     fn drop(&mut self) {
-        self.stop();
+        self.disconnect();
     }
 }

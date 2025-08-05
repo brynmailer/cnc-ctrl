@@ -17,11 +17,7 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
     controller: &Controller,
     predicate: Option<F>,
 ) -> Result<Option<Report>, ControllerError> {
-    let Some((prio_serial_tx, prio_serial_rx)) = controller.prio_serial_channel.clone() else {
-        return Err(ControllerError::SerialError(
-            "Controller not started".to_string(),
-        ));
-    };
+    let (prio_serial_tx, prio_serial_rx) = controller.prio_serial.clone();
 
     let polling = Arc::new(AtomicBool::new(true));
 
@@ -67,11 +63,7 @@ pub fn buffered_stream(
     rx_buffer_size: usize,
     mut file: Option<&mut File>,
 ) -> Result<Vec<(i32, Response)>, ControllerError> {
-    let Some((serial_tx, serial_rx)) = controller.serial_channel.clone() else {
-        return Err(ControllerError::SerialError(
-            "Controller not started".to_string(),
-        ));
-    };
+    let (serial_tx, serial_rx) = controller.serial.clone();
 
     let re = Regex::new(r"^\$J=.* IN$").expect("Failed to create regex");
     let mut bytes_queued = VecDeque::new();
