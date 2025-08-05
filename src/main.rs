@@ -105,8 +105,7 @@ fn main() -> Result<(), String> {
         warn!("Shutting down...");
 
         executing_clone.store(false, Ordering::Relaxed);
-        thread::sleep(Duration::from_secs(2));
-
+        thread::sleep(Duration::from_millis(500));
         if let Err(error) = serial_clone.write_all(&[0x18]) {
             error!("Failed to soft reset Grbl: {}", error);
         }
