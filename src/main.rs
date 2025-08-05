@@ -27,12 +27,8 @@ fn setup_gpio(config: &CncConfig) -> Result<GpioInputs, Box<dyn std::error::Erro
     let gpio = Gpio::new()?;
 
     let signal = gpio.get(config.inputs.signal.pin)?.into_input_pullup();
-    let probe_xy = gpio
-        .get(config.inputs.probe_xy_limit.pin)?
-        .into_input_pullup();
-    let probe_z = gpio
-        .get(config.inputs.probe_z_limit.pin)?
-        .into_input_pullup();
+    let probe_xy = gpio.get(config.inputs.probe_xy.pin)?.into_input_pullup();
+    let probe_z = gpio.get(config.inputs.probe_z.pin)?.into_input_pullup();
 
     Ok(GpioInputs {
         signal,
@@ -127,9 +123,7 @@ fn main() -> Result<(), String> {
         .probe_xy
         .set_async_interrupt(
             Trigger::RisingEdge,
-            Some(Duration::from_millis(
-                config.inputs.probe_xy_limit.debounce_ms,
-            )),
+            Some(Duration::from_millis(config.inputs.probe_xy.debounce_ms)),
             move |_| {
                 if let Err(error) = prio_serial_tx_xy.send(Command::Realtime(0x85)) {
                     error!("Failed to send XY probe interrupt signal: {}", error);
@@ -143,9 +137,7 @@ fn main() -> Result<(), String> {
         .probe_z
         .set_async_interrupt(
             Trigger::RisingEdge,
-            Some(Duration::from_millis(
-                config.inputs.probe_z_limit.debounce_ms,
-            )),
+            Some(Duration::from_millis(config.inputs.probe_z.debounce_ms)),
             move |_| {
                 if let Err(error) = prio_serial_tx_z.send(Command::Realtime(0x85)) {
                     error!("Failed to send Z probe interrupt signal: {}", error);

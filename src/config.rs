@@ -36,8 +36,8 @@ pub struct GrblConfig {
 #[derive(Debug, Deserialize)]
 pub struct InputsConfig {
     pub signal: InputPin,
-    pub probe_xy_limit: InputPin,
-    pub probe_z_limit: InputPin,
+    pub probe_xy: InputPin,
+    pub probe_z: InputPin,
 }
 
 #[derive(Debug, Deserialize)]
