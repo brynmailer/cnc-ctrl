@@ -24,11 +24,10 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
     };
 
     let polling = Arc::new(AtomicBool::new(true));
-    let running = controller.running.clone();
 
     Ok(thread::scope(|scope| {
         scope.spawn(|| {
-            while polling.load(Ordering::Relaxed) {
+            while polling.load(Ordering::Relaxed) && controller.running.load(Ordering::Relaxed) {
                 if let Err(error) = prio_serial_tx.send(Command::Realtime(b'?')) {
                     error!("Failed to poll status report: {}", error);
                 }
@@ -37,7 +36,7 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
             }
         });
 
-        while running.load(Ordering::Relaxed) {
+        while controller.running.load(Ordering::Relaxed) {
             match prio_serial_rx.recv() {
                 Ok(Push::Report(report)) => {
                     if let Some(matcher) = &predicate {
@@ -57,8 +56,6 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
                 }
             }
         }
-
-        polling.store(false, Ordering::Relaxed);
 
         Ok(None)
     })?)
