@@ -2,7 +2,7 @@ pub mod command;
 pub mod message;
 pub mod serial;
 
-use log::{debug, error};
+use log::{debug, error, info};
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,6 +76,7 @@ impl Controller {
         self.running.store(true, Ordering::Relaxed);
 
         fn log_err<R, T: std::error::Error>(err: T) -> Result<R, T> {
+            info!("Hit handler");
             error!("{}", err);
             Err(err)
         }
@@ -157,8 +158,6 @@ impl Controller {
 
 impl Drop for Controller {
     fn drop(&mut self) {
-        if self.running.load(Ordering::Relaxed) {
-            self.stop();
-        }
+        self.stop();
     }
 }
