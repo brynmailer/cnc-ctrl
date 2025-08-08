@@ -69,21 +69,14 @@ impl Controller {
         }
     }
 
-    pub fn connect(
-        &mut self,
-        serial: Box<dyn serialport::SerialPort>,
-        verbose_logging: bool,
-        executing: Arc<AtomicBool>,
-    ) {
+    pub fn connect(&mut self, serial: Box<dyn serialport::SerialPort>, verbose_logging: bool) {
         let mut writer = io::BufWriter::new(serial.try_clone().unwrap());
         let mut reader = io::BufReader::new(serial.try_clone().unwrap());
 
         let (prio_recv_tx, prio_send_rx) = self.prio_serial_internal.clone();
         let (recv_tx, send_rx) = self.serial_internal.clone();
 
-        let send_executing = executing.clone();
         let send_connected = self.connected.clone();
-        let recv_executing = executing.clone();
         let recv_connected = self.connected.clone();
 
         self.connected.store(true, Ordering::Relaxed);
@@ -117,7 +110,7 @@ impl Controller {
                 let _ = writer.flush().or_else(log_err);
             }
 
-            while send_connected.load(Ordering::Relaxed) && send_executing.load(Ordering::Relaxed) {
+            while send_connected.load(Ordering::Relaxed) {
                 if let Ok(command) = prio_send_rx.try_recv() {
                     send(&mut writer, command, verbose_logging);
                 }
@@ -129,7 +122,7 @@ impl Controller {
         });
 
         let recv_handle = thread::spawn(move || {
-            while recv_connected.load(Ordering::Relaxed) && recv_executing.load(Ordering::Relaxed) {
+            while recv_connected.load(Ordering::Relaxed) {
                 let mut response = String::new();
                 let _ = reader.read_line(&mut response).or_else(log_err);
                 let message = Message::from(response.trim());
