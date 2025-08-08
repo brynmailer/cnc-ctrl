@@ -88,6 +88,7 @@ fn main() -> Result<(), String> {
         CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
 
     let serial = serialport::new(&config.serial.port, config.serial.baudrate)
+        .timeout(Duration::from_millis(config.serial.timeout_ms))
         .open()
         .map_err(|error| format!("Failed to open serial connection: {}", error))?;
     let mut serial_clone = serial

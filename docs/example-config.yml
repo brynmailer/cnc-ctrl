@@ -6,6 +6,7 @@ logs:
 serial:
   port: "/dev/ttyUSB0"
   baudrate: 115200
+  timeout_ms: 60000
 
 grbl:
   rx_buffer_size_bytes: 1024

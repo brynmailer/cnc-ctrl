@@ -2,7 +2,7 @@ pub mod command;
 pub mod message;
 pub mod serial;
 
-use log::{debug, error};
+use log::{debug, error, info};
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
