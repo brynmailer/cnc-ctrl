@@ -76,7 +76,8 @@ impl Controller {
         self.running.store(true, Ordering::Relaxed);
 
         fn log_err<R, T: std::error::Error>(err: T) -> Result<R, T> {
-            error!("{}", ControllerError::SerialError(err.to_string()));
+            info!("Hit handler");
+            error!("{}", err);
             Err(err)
         }
 
