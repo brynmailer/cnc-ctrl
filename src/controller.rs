@@ -45,10 +45,13 @@ impl fmt::Display for ControllerError {
 pub struct Controller {
     pub prio_serial: (channel::Sender<Command>, channel::Receiver<Push>),
     prio_serial_internal: (channel::Sender<Push>, channel::Receiver<Command>),
+
     pub serial: (channel::Sender<Command>, channel::Receiver<Response>),
     serial_internal: (channel::Sender<Response>, channel::Receiver<Command>),
+
     serial_handles: Option<(thread::JoinHandle<()>, thread::JoinHandle<()>)>,
-    connected: Arc<AtomicBool>,
+
+    pub running: Arc<AtomicBool>,
 }
 
 impl Controller {
@@ -62,10 +65,13 @@ impl Controller {
         Self {
             prio_serial: (prio_send_tx, prio_recv_rx),
             prio_serial_internal: (prio_recv_tx, prio_send_rx),
+
             serial: (send_tx, recv_rx),
             serial_internal: (recv_tx, send_rx),
+
             serial_handles: None,
-            connected: Arc::new(AtomicBool::new(false)),
+
+            running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -76,10 +82,10 @@ impl Controller {
         let (prio_recv_tx, prio_send_rx) = self.prio_serial_internal.clone();
         let (recv_tx, send_rx) = self.serial_internal.clone();
 
-        let send_connected = self.connected.clone();
-        let recv_connected = self.connected.clone();
+        let send_running = self.running.clone();
+        let recv_running = self.running.clone();
 
-        self.connected.store(true, Ordering::Relaxed);
+        self.running.store(true, Ordering::Relaxed);
 
         fn log_err<R, T: std::error::Error>(err: T) -> Result<R, T> {
             error!("{}", ControllerError::SerialError(err.to_string()));
@@ -110,7 +116,7 @@ impl Controller {
                 let _ = writer.flush().or_else(log_err);
             }
 
-            while send_connected.load(Ordering::Relaxed) {
+            while send_running.load(Ordering::Relaxed) {
                 if let Ok(command) = prio_send_rx.try_recv() {
                     send(&mut writer, command, verbose_logging);
                 }
@@ -122,7 +128,7 @@ impl Controller {
         });
 
         let recv_handle = thread::spawn(move || {
-            while recv_connected.load(Ordering::Relaxed) {
+            while recv_running.load(Ordering::Relaxed) {
                 let mut response = String::new();
                 let _ = reader.read_line(&mut response).or_else(log_err);
                 let message = Message::from(response.trim());
@@ -148,7 +154,7 @@ impl Controller {
 
     pub fn disconnect(&mut self) {
         if let Some((send_handle, recv_handle)) = self.serial_handles.take() {
-            self.connected.store(false, Ordering::Relaxed);
+            self.running.store(false, Ordering::Relaxed);
 
             let _ = send_handle.join();
             let _ = recv_handle.join();

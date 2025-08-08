@@ -1,7 +1,5 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use log::{error, info};
 
@@ -18,7 +16,6 @@ pub fn execute_gcode_step(
     controller: &Controller,
     timestamp: &str,
     rx_buffer_size: usize,
-    executing: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let expanded_path = expand_path(&step.path);
     let templated_path = apply_template(&expanded_path, timestamp);
@@ -65,23 +62,18 @@ pub fn execute_gcode_step(
             .send(Command::Gcode("$C".to_string()))
             .map_err(|error| format!("Failed to enable check mode: {}", error))?;
 
-        let errors: Vec<(i32, Response)> = buffered_stream(
-            controller,
-            gcode.clone(),
-            rx_buffer_size,
-            None,
-            executing.clone(),
-        )
-        .map_err(|error| format!("Failed to stream G-code in check mode: {}", error))?
-        .iter()
-        .filter_map(|res| {
-            if let Response::Error(_) = res.1 {
-                Some(*res)
-            } else {
-                None
-            }
-        })
-        .collect();
+        let errors: Vec<(i32, Response)> =
+            buffered_stream(controller, gcode.clone(), rx_buffer_size, None)
+                .map_err(|error| format!("Failed to stream G-code in check mode: {}", error))?
+                .iter()
+                .filter_map(|res| {
+                    if let Response::Error(_) = res.1 {
+                        Some(*res)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
         serial_tx
             .send(Command::Gcode("$C".to_string()))
@@ -97,17 +89,11 @@ pub fn execute_gcode_step(
 
     info!("Streaming G-code");
 
-    buffered_stream(
-        controller,
-        gcode,
-        rx_buffer_size,
-        output_file.as_mut(),
-        executing.clone(),
-    )
-    .map_err(|error| format!("Failed to stream G-code: {}", error))?;
+    buffered_stream(controller, gcode, rx_buffer_size, output_file.as_mut())
+        .map_err(|error| format!("Failed to stream G-code: {}", error))?;
 
     wait_for_report(
-        controller,
+        &controller,
         Some(|report: &Report| {
             matches!(
                 report,
@@ -117,7 +103,6 @@ pub fn execute_gcode_step(
                 }
             )
         }),
-        executing.clone(),
     )?;
 
     info!("Streaming complete");
