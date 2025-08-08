@@ -88,16 +88,16 @@ fn main() -> Result<(), String> {
         CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
 
     let serial = serialport::new(&config.serial.port, config.serial.baudrate)
-        .timeout(Duration::from_millis(config.serial.timeout_ms))
         .open()
         .map_err(|error| format!("Failed to open serial connection: {}", error))?;
-
-    let mut controller = Controller::new();
-
     let mut serial_clone = serial
         .try_clone()
         .map_err(|error| format!("Failed to clone serial connection: {}", error))?;
+
+    let mut controller = Controller::new();
     let controller_running = controller.running.clone();
+    controller.start(serial, config.logs.verbose);
+
     ctrlc::set_handler(move || {
         warn!("Shutting down...");
 
@@ -113,7 +113,11 @@ fn main() -> Result<(), String> {
     let mut gpio_inputs =
         setup_gpio(&config).map_err(|error| format!("Failed to setup GPIO pins: {}", error))?;
 
-    let prio_serial_tx_xy = controller.prio_serial.0.clone();
+    let Some((prio_serial_tx, _)) = controller.prio_serial_channel.clone() else {
+        return Err("Failed to clone serial tx: Controller not started".to_string());
+    };
+
+    let prio_serial_tx_xy = prio_serial_tx.clone();
     gpio_inputs
         .probe_xy
         .set_async_interrupt(
@@ -127,7 +131,7 @@ fn main() -> Result<(), String> {
         )
         .map_err(|error| format!("Failed to set probe XY interrupt: {}", error))?;
 
-    let prio_serial_tx_z = controller.prio_serial.0.clone();
+    let prio_serial_tx_z = prio_serial_tx.clone();
     gpio_inputs
         .probe_z
         .set_async_interrupt(
@@ -163,16 +167,7 @@ fn main() -> Result<(), String> {
 
             info!("Executing step {} (timestamp: {})", i + 1, timestamp);
 
-            controller.connect(
-                serial
-                    .try_clone()
-                    .map_err(|error| format!("Failed to start controller: {}", error))?,
-                config.logs.verbose,
-            );
-
             let result = step.execute(&controller, &timestamp, &config);
-
-            controller.disconnect();
 
             match result {
                 Ok(()) => info!("Step {} completed successfully", i + 1),

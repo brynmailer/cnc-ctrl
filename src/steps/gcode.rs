@@ -56,11 +56,11 @@ pub fn execute_gcode_step(
     if step.check {
         info!("Checking G-code");
 
-        let (serial_tx, _) = controller.serial.clone();
-
-        serial_tx
-            .send(Command::Gcode("$C".to_string()))
-            .map_err(|error| format!("Failed to enable check mode: {}", error))?;
+        if let Some((serial_tx, _)) = controller.serial_channel.clone() {
+            serial_tx
+                .send(Command::Gcode("$C".to_string()))
+                .map_err(|error| format!("Failed to enable check mode: {}", error))?;
+        }
 
         let errors: Vec<(i32, Response)> =
             buffered_stream(controller, gcode.clone(), rx_buffer_size, None)
@@ -75,9 +75,11 @@ pub fn execute_gcode_step(
                 })
                 .collect();
 
-        serial_tx
-            .send(Command::Gcode("$C".to_string()))
-            .map_err(|error| format!("Failed to disable check mode: {}", error))?;
+        if let Some((serial_tx, _)) = controller.serial_channel.clone() {
+            serial_tx
+                .send(Command::Gcode("$C".to_string()))
+                .map_err(|error| format!("Failed to disable check mode: {}", error))?;
+        }
 
         if errors.len() > 0 {
             error!("Checking complete! {} errors found", errors.len());
