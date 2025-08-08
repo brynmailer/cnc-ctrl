@@ -1,6 +1,6 @@
-# CNC Control
+# CNC Ctrl
 
-A Rust-based CNC control system designed for Raspberry Pi 4B, providing GPIO-based input handling, serial communication with CNC controllers running [grblHAL](https://github.com/grblHAL/core) firmware.
+A Rust-based CNC control system designed for Raspberry Pi 4B, providing GPIO-based input handling and serial communication with CNC controllers running [grblHAL](https://github.com/grblHAL/core) firmware.
 
 ## Features
 
