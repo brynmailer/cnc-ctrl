@@ -171,7 +171,6 @@ fn main() -> Result<(), String> {
                     .try_clone()
                     .map_err(|error| format!("Failed to start controller: {}", error))?,
                 config.logs.verbose,
-                executing.clone(),
             );
 
             let result = step.execute(&controller, &timestamp, &config, executing.clone());
