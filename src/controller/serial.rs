@@ -1,16 +1,13 @@
 use std::collections::VecDeque;
-use std::fs::File;
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use log::error;
-use regex::Regex;
 
 use super::command::Command;
-use super::message::{Push, Report, Response, Status};
+use super::message::{Push, Report, Response};
 use super::{Controller, ControllerError};
 
 pub fn wait_for_report<F: Fn(&Report) -> bool>(
@@ -66,7 +63,6 @@ pub fn buffered_stream(
     controller: &Controller,
     gcode: Vec<&str>,
     rx_buffer_size: usize,
-    mut file: Option<&mut File>,
 ) -> Result<Vec<(i32, Response)>, ControllerError> {
     let Some((serial_tx, serial_rx)) = controller.serial_channel.clone() else {
         return Err(ControllerError::SerialError(
@@ -74,7 +70,6 @@ pub fn buffered_stream(
         ));
     };
 
-    let re = Regex::new(r"^\$J=.* IN$").expect("Failed to create regex");
     let mut bytes_queued = VecDeque::new();
     let mut received_count = 0;
     let mut sent_count = 0;
@@ -97,12 +92,7 @@ pub fn buffered_stream(
     };
 
     for raw_line in gcode {
-        let interruptible = re.is_match(raw_line.trim());
-        let line = if interruptible {
-            raw_line.trim().strip_suffix(" IN").unwrap()
-        } else {
-            raw_line.trim()
-        };
+        let line = raw_line.trim();
 
         bytes_queued.push_back(line.len());
 
@@ -116,38 +106,6 @@ pub fn buffered_stream(
                 ControllerError::SerialError(format!("Failed to send G-code command: {}", error))
             })?;
         sent_count += 1;
-
-        if interruptible {
-            let report = wait_for_report(
-                controller,
-                Some(|report: &Report| {
-                    matches!(
-                        report,
-                        &Report {
-                            status: Some(Status::Idle),
-                            mpos: Some(_),
-                            ..
-                        }
-                    )
-                }),
-            )?;
-
-            if let Some(report) = report {
-                let unwrapped_mpos = report.mpos.unwrap();
-                if let Some(file) = &mut file {
-                    file.write_all(
-                        format!(
-                            "{},{},{}\n",
-                            unwrapped_mpos.0, unwrapped_mpos.1, unwrapped_mpos.2
-                        )
-                        .as_bytes(),
-                    )
-                    .map_err(|error| {
-                        ControllerError::SerialError(format!("Failed to save point: {}", error))
-                    })?;
-                }
-            }
-        }
     }
 
     while sent_count > received_count {

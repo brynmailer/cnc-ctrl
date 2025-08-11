@@ -2,12 +2,10 @@ use std::process::Command;
 
 use log::info;
 
-use crate::config::{apply_template, expand_path};
-
-use super::BashStep;
+use crate::config::{BashStepConfig, apply_template, expand_path};
 
 pub fn execute_bash_step(
-    step: &BashStep,
+    step: &BashStepConfig,
     timestamp: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let expanded_command = expand_path(&step.command);

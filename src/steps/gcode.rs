@@ -1,18 +1,16 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 use log::{error, info};
 
-use crate::config::{apply_template, expand_path};
+use crate::config::{GcodeStepConfig, ProbeConfig, apply_template, expand_path};
 use crate::controller::command::Command;
 use crate::controller::message::{Report, Response, Status};
 use crate::controller::serial::{buffered_stream, wait_for_report};
 use crate::controller::{Controller, ControllerError};
 
-use super::GcodeStep;
-
 pub fn execute_gcode_step(
-    step: &GcodeStep,
+    step: &GcodeStepConfig,
     controller: &Controller,
     timestamp: &str,
     rx_buffer_size: usize,
@@ -29,29 +27,30 @@ pub fn execute_gcode_step(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Failed to read G-code file: {}", error))?;
 
-    let mut output_file = if let Some(points_config) = &step.points {
-        if points_config.save {
-            let expanded_output = expand_path(&points_config.path);
-            let templated_output = apply_template(&expanded_output, timestamp);
+    let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
 
-            if let Some(parent) = std::path::Path::new(&templated_output).parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+    let output_writer = if let Some(ProbeConfig {
+        save_path: Some(save_path),
+    }) = &step.probe
+    {
+        let expanded_output = expand_path(&save_path);
+        let templated_output = apply_template(&expanded_output, timestamp);
 
-            Some(File::create(&templated_output).map_err(|error| {
-                format!(
-                    "Failed to create output file '{}': {}",
-                    templated_output, error
-                )
-            })?)
-        } else {
-            None
+        if let Some(parent) = std::path::Path::new(&templated_output).parent() {
+            std::fs::create_dir_all(parent)?;
         }
+
+        let file = File::create(&templated_output).map_err(|error| {
+            format!(
+                "Failed to create output file '{}': {}",
+                templated_output, error
+            )
+        })?;
+
+        Some(BufWriter::new(file))
     } else {
         None
     };
-
-    let gcode: Vec<&str> = gcode_lines.iter().map(|s| s.as_str()).collect();
 
     if step.check {
         info!("Checking G-code");
@@ -63,12 +62,12 @@ pub fn execute_gcode_step(
         }
 
         let errors: Vec<(i32, Response)> =
-            buffered_stream(controller, gcode.clone(), rx_buffer_size, None)
+            buffered_stream(controller, gcode.clone(), rx_buffer_size)
                 .map_err(|error| format!("Failed to stream G-code in check mode: {}", error))?
                 .iter()
                 .filter_map(|res| {
                     if let Response::Error(_) = res.1 {
-                        Some(*res)
+                        Some(res.clone())
                     } else {
                         None
                     }
@@ -91,8 +90,20 @@ pub fn execute_gcode_step(
 
     info!("Streaming G-code");
 
-    buffered_stream(controller, gcode, rx_buffer_size, output_file.as_mut())
+    let responses = buffered_stream(controller, gcode, rx_buffer_size)
         .map_err(|error| format!("Failed to stream G-code: {}", error))?;
+
+    if let Some(mut writer) = output_writer {
+        responses
+            .iter()
+            .try_for_each(|res| -> std::io::Result<()> {
+                if let Response::Probe { coords, .. } = res.1 {
+                    writeln!(writer, "{},{},{}", coords.0, coords.1, coords.2)?;
+                }
+
+                Ok(())
+            })?;
+    }
 
     wait_for_report(
         &controller,
