@@ -83,8 +83,10 @@ pub fn buffered_stream(
             ControllerError::SerialError(format!("Failed to wait for response: {}", error))
         })?;
 
-        *received_count += 1;
-        bytes_queued.pop_front();
+        if let Response::Ok | Response::Error(_) = response {
+            *received_count += 1;
+            bytes_queued.pop_front();
+        }
 
         responses.push((*received_count, response));
 
