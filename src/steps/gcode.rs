@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::config::{GcodeStepConfig, ProbeConfig, apply_template, expand_path};
 use crate::controller::command::Command;
@@ -81,8 +81,14 @@ pub fn execute_gcode_step(
         }
 
         if errors.len() > 0 {
-            error!("Checking complete! {} errors found", errors.len());
-            return Err(Box::new(ControllerError::GcodeError(errors)));
+            error!("Checking complete! {} errors found:\n", errors.len());
+
+            for error in errors {
+                error!("{}", ControllerError::GcodeError(error.0, error.1));
+            }
+
+            warn!("\nSkipping streaming");
+            return Ok(());
         } else {
             info!("Checking complete! No errors found");
         }

@@ -91,7 +91,7 @@ fn main() -> Result<(), String> {
     controller.start(serial, config.logs.verbose);
 
     ctrlc::set_handler(move || {
-        warn!("Shutting down...");
+        warn!("\nShutting down...");
 
         controller_running.store(false, Ordering::Relaxed);
         thread::sleep(Duration::from_secs(2));
