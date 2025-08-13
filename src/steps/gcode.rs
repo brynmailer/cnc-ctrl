@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-use log::{error, info, warn};
+use log::{error, info};
 
 use crate::config::{GcodeStepConfig, ProbeConfig, apply_template, expand_path};
 use crate::controller::command::Command;
@@ -61,13 +61,13 @@ pub fn execute_gcode_step(
                 .map_err(|error| format!("Failed to enable check mode: {}", error))?;
         }
 
-        let errors: Vec<(i32, Response)> =
+        let errors: Vec<ControllerError> =
             buffered_stream(controller, gcode.clone(), rx_buffer_size)
                 .map_err(|error| format!("Failed to stream G-code in check mode: {}", error))?
                 .iter()
                 .filter_map(|res| {
                     if let Response::Error(_) = res.1 {
-                        Some(res.clone())
+                        Some(ControllerError::GcodeError(res.0, res.1.clone()))
                     } else {
                         None
                     }
@@ -81,13 +81,18 @@ pub fn execute_gcode_step(
         }
 
         if errors.len() > 0 {
-            error!("Checking complete! {} errors found:\n", errors.len());
+            error!(
+                "
+                Checking complete! {} errors found:\n\n
+                {}\n\n
+                Skipping stream
+                ",
+                errors.len(),
+                errors
+                    .iter()
+                    .fold(String::new(), |res, err| format!("{}\n{}", res, err)),
+            );
 
-            for error in errors {
-                error!("{}", ControllerError::GcodeError(error.0, error.1));
-            }
-
-            warn!("\nSkipping streaming");
             return Ok(());
         } else {
             info!("Checking complete! No errors found");
