@@ -82,16 +82,15 @@ pub fn execute_gcode_step(
 
         if errors.len() > 0 {
             error!(
-                "
-                Checking complete! {} errors found:\n\n
-                {}\n\n
-                Skipping stream
-                ",
+                "Checking complete! {} errors found:\n
+                 {}\n",
                 errors.len(),
-                errors
-                    .iter()
-                    .fold(String::new(), |res, err| format!("{}\n{}", res, err)),
+                errors.iter().fold(String::new(), |res, err| format!(
+                    "{}\n                {}",
+                    res, err
+                )),
             );
+            info!("Skipping streaming");
 
             return Ok(());
         } else {
