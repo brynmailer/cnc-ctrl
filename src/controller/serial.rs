@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use log::{error, info};
+use log::error;
 
 use super::command::Command;
 use super::message::{Push, Report, Response};
