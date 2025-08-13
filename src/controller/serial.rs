@@ -83,11 +83,10 @@ pub fn buffered_stream(
             })?;
 
             if let Response::Ok | Response::Error(_) = response {
-                *received += 1;
                 queued_bytes.pop_front();
+                *received += 1;
             }
 
-            info!("{}: {}", *received, response);
             responses.push((*received, response));
 
             Ok(())
@@ -96,14 +95,13 @@ pub fn buffered_stream(
     for raw_line in gcode {
         let line = raw_line.trim();
 
-        queued_bytes.push_back(line.len());
+        queued_bytes.push_back(line.len() + 1);
+        sent += 1;
 
-        while queued_bytes.iter().sum::<usize>() >= rx_buffer_size {
+        while queued_bytes.iter().sum::<usize>() >= rx_buffer_size - 1 {
             receive(&mut received, &mut queued_bytes)?;
         }
 
-        sent += 1;
-        info!("{}: {}", sent, Command::Gcode(line.to_string()));
         serial_tx
             .send(Command::Gcode(line.to_string()))
             .map_err(|error| {

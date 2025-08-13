@@ -89,7 +89,7 @@ impl Controller {
                 match command {
                     Command::Gcode(gcode) => {
                         let _ = writer
-                            .write_all(format!("{}\r\n", gcode).as_bytes())
+                            .write_all(format!("{}\n", gcode).as_bytes())
                             .or_else(log_err);
                     }
                     Command::Realtime(byte) => {
