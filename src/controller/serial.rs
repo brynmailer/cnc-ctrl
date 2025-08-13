@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use log::error;
+use log::{error, info};
 
 use super::command::Command;
 use super::message::{Push, Report, Response};
@@ -70,48 +70,49 @@ pub fn buffered_stream(
         ));
     };
 
-    let mut bytes_queued = VecDeque::new();
-    let mut received_count = 0;
-    let mut sent_count = 0;
-
+    let mut queued_bytes = VecDeque::new();
     let mut responses = Vec::new();
 
-    let mut receive = |received_count: &mut i32,
-                       bytes_queued: &mut VecDeque<usize>|
-     -> Result<(), ControllerError> {
-        let response = serial_rx.recv().map_err(|error| {
-            ControllerError::SerialError(format!("Failed to wait for response: {}", error))
-        })?;
+    let mut sent = 0;
+    let mut received = 0;
 
-        if let Response::Ok | Response::Error(_) = response {
-            *received_count += 1;
-            bytes_queued.pop_front();
-        }
+    let mut receive =
+        |received: &mut i32, queued_bytes: &mut VecDeque<usize>| -> Result<(), ControllerError> {
+            let response = serial_rx.recv().map_err(|error| {
+                ControllerError::SerialError(format!("Failed to wait for response: {}", error))
+            })?;
 
-        responses.push((*received_count, response));
+            if let Response::Ok | Response::Error(_) = response {
+                *received += 1;
+                queued_bytes.pop_front();
+            }
 
-        Ok(())
-    };
+            info!("{}: {}", *received, response);
+            responses.push((*received, response));
+
+            Ok(())
+        };
 
     for raw_line in gcode {
         let line = raw_line.trim();
 
-        bytes_queued.push_back(line.len());
+        queued_bytes.push_back(line.len());
 
-        while bytes_queued.iter().sum::<usize>() >= rx_buffer_size {
-            receive(&mut received_count, &mut bytes_queued)?;
+        while queued_bytes.iter().sum::<usize>() >= rx_buffer_size {
+            receive(&mut received, &mut queued_bytes)?;
         }
 
+        sent += 1;
+        info!("{}: {}", sent, Command::Gcode(line.to_string()));
         serial_tx
             .send(Command::Gcode(line.to_string()))
             .map_err(|error| {
                 ControllerError::SerialError(format!("Failed to send G-code command: {}", error))
             })?;
-        sent_count += 1;
     }
 
-    while sent_count > received_count {
-        receive(&mut received_count, &mut bytes_queued)?;
+    while sent > received {
+        receive(&mut received, &mut queued_bytes)?;
     }
 
     Ok(responses)
