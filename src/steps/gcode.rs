@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::config::{GcodeStepConfig, ProbeConfig, apply_template, expand_path};
 use crate::controller::command::Command;
@@ -86,11 +86,11 @@ pub fn execute_gcode_step(
                  {}\n",
                 errors.len(),
                 errors.iter().fold(String::new(), |res, err| format!(
-                    "{}\n                {}",
+                    "{}\n                 {}",
                     res, err
                 )),
             );
-            info!("Skipping streaming");
+            warn!("Skipping streaming");
 
             return Ok(());
         } else {
