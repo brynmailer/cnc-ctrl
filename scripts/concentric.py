@@ -51,9 +51,9 @@ def offset_points_outward(points, p1, p2, dist):
     v = np.array(p2) - np.array(p1)
     normal = unit_vector(normal_vector(v))                                                                                                                                           
     return [tuple(np.array(pt) + dist * normal) for pt in points]
-def mirror_points_y_axis(points):
-    """Mirror points across the y-axis (negate x-coordinates)"""
-    return [(-x, y) for x, y in points]
+
+def flip_points(points):
+    return [(-x - 616, y) for x, y in points]
 
 # Validate input
 if len(x) != len(edges):
@@ -83,9 +83,9 @@ for i, ((inner_p1, inner_p2), (exp_p1, exp_p2)) in enumerate(zip(inner_edges, ex
     outer_points.extend(offset_points_outward(inner_eq_points, inner_p1, inner_p2, y))
 
 # Create mirrored versions
-inner_points_mirrored = mirror_points_y_axis(inner_points)
-expected_points_mirrored = mirror_points_y_axis(expected_points)
-outer_points_mirrored = mirror_points_y_axis(outer_points)
+inner_points_mirrored = flip_points(inner_points)
+expected_points_mirrored = flip_points(expected_points)
+outer_points_mirrored = flip_points(outer_points)
 
 # Save original files with 'aconcentric' prefix
 with open('aconcentric_inner.csv', 'w', newline='') as f:
