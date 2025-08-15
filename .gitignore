@@ -2,7 +2,10 @@
 .env
 .crush/
 
+*.csv
+*.gcode
+
+__pycache__
 
 # Added by cargo
-
 /target
