@@ -104,6 +104,8 @@ pub fn execute_gcode_step(
         .map_err(|error| format!("Failed to stream G-code: {}", error))?;
 
     if let Some(mut writer) = output_writer {
+        writeln!(writer, "x,y,z")?;
+
         responses
             .iter()
             .try_for_each(|res| -> std::io::Result<()> {
