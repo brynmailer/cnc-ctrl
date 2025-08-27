@@ -3,8 +3,6 @@ use std::env;
 use config::{Config, File};
 use serde::Deserialize;
 
-use super::steps::Step;
-
 #[derive(Debug, Deserialize)]
 pub struct CncConfig {
     pub logs: LogsConfig,
@@ -36,8 +34,6 @@ pub struct GrblConfig {
 #[derive(Debug, Deserialize)]
 pub struct InputsConfig {
     pub signal: InputPin,
-    pub probe_xy: InputPin,
-    pub probe_z: InputPin,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,10 +43,42 @@ pub struct InputPin {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct PointsConfig {
-    #[serde(default)]
-    pub save: bool,
+#[serde(tag = "type")]
+pub enum Step {
+    #[serde(rename = "gcode")]
+    Gcode(GcodeStepConfig),
+    #[serde(rename = "bash")]
+    Bash(BashStepConfig),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GcodeStepConfig {
     pub path: String,
+    pub probe: Option<ProbeConfig>,
+    #[serde(default = "default_wait_for_signal")]
+    pub wait_for_signal: bool,
+    #[serde(default = "default_check")]
+    pub check: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProbeConfig {
+    pub save_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BashStepConfig {
+    pub command: String,
+    #[serde(default)]
+    pub wait_for_signal: bool,
+}
+
+fn default_wait_for_signal() -> bool {
+    true
+}
+
+fn default_check() -> bool {
+    true
 }
 
 impl CncConfig {

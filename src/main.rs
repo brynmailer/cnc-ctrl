@@ -15,26 +15,17 @@ use simplelog::*;
 
 use config::{CncConfig, apply_template, expand_path};
 use controller::Controller;
-use controller::command::Command;
 
 struct GpioInputs {
     signal: InputPin,
-    probe_xy: InputPin,
-    probe_z: InputPin,
 }
 
 fn setup_gpio(config: &CncConfig) -> Result<GpioInputs, Box<dyn std::error::Error>> {
     let gpio = Gpio::new()?;
 
     let signal = gpio.get(config.inputs.signal.pin)?.into_input_pullup();
-    let probe_xy = gpio.get(config.inputs.probe_xy.pin)?.into_input_pullup();
-    let probe_z = gpio.get(config.inputs.probe_z.pin)?.into_input_pullup();
 
-    Ok(GpioInputs {
-        signal,
-        probe_xy,
-        probe_z,
-    })
+    Ok(GpioInputs { signal })
 }
 
 fn setup_logging(config: &CncConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -113,38 +104,6 @@ fn main() -> Result<(), String> {
 
     let mut gpio_inputs =
         setup_gpio(&config).map_err(|error| format!("Failed to setup GPIO pins: {}", error))?;
-
-    let Some((prio_serial_tx, _)) = controller.prio_serial_channel.clone() else {
-        return Err("Failed to clone serial tx: Controller not started".to_string());
-    };
-
-    let prio_serial_tx_xy = prio_serial_tx.clone();
-    gpio_inputs
-        .probe_xy
-        .set_async_interrupt(
-            Trigger::RisingEdge,
-            Some(Duration::from_millis(config.inputs.probe_xy.debounce_ms)),
-            move |_| {
-                if let Err(error) = prio_serial_tx_xy.send(Command::Realtime(0x85)) {
-                    error!("Failed to send XY probe interrupt signal: {}", error);
-                }
-            },
-        )
-        .map_err(|error| format!("Failed to set probe XY interrupt: {}", error))?;
-
-    let prio_serial_tx_z = prio_serial_tx.clone();
-    gpio_inputs
-        .probe_z
-        .set_async_interrupt(
-            Trigger::RisingEdge,
-            Some(Duration::from_millis(config.inputs.probe_z.debounce_ms)),
-            move |_| {
-                if let Err(error) = prio_serial_tx_z.send(Command::Realtime(0x85)) {
-                    error!("Failed to send Z probe interrupt signal: {}", error);
-                }
-            },
-        )
-        .map_err(|error| format!("Failed to set probe Z interrupt: {}", error))?;
 
     gpio_inputs
         .signal

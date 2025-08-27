@@ -22,22 +22,24 @@ impl fmt::Display for Message {
 
 impl From<&str> for Message {
     fn from(value: &str) -> Self {
-        if value.contains("ok") {
-            Message::Response(Response::Ok)
-        } else if let Some(code) = value.strip_prefix("error:") {
-            Message::Response(Response::Error(code.parse().unwrap()))
-        } else if let Ok(report) = Report::try_from(value) {
-            Message::Push(Push::Report(report))
+        if let Ok(response) = Response::try_from(value) {
+            Message::Response(response)
+        } else if let Ok(push) = Push::try_from(value) {
+            Message::Push(push)
         } else {
             Message::Unknown(value.to_string())
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Response {
     Ok,
     Error(u8),
+    Probe {
+        raw: String,
+        coords: (f64, f64, f64),
+    },
 }
 
 impl fmt::Display for Response {
@@ -45,6 +47,61 @@ impl fmt::Display for Response {
         match self {
             Response::Ok => write!(f, "ok"),
             Response::Error(code) => write!(f, "error:{}", code),
+            Response::Probe { raw, .. } => write!(f, "{}", raw),
+        }
+    }
+}
+
+impl TryFrom<&str> for Response {
+    type Error = ControllerError;
+
+    fn try_from(value: &str) -> Result<Self, ControllerError> {
+        if value.contains("ok") {
+            Ok(Response::Ok)
+        } else if let Some(code) = value.strip_prefix("error:") {
+            let error_code = code.parse().map_err(|_| ControllerError::ParseError {
+                message: "Invalid error code".to_string(),
+                input: value.to_string(),
+            })?;
+            Ok(Response::Error(error_code))
+        } else if value.starts_with("[PRB:") {
+            let regex = Regex::new(r"^\[PRB:([+-]?\d+\.\d+),([+-]?\d+\.\d+),([+-]?\d+\.\d+),([+-]?\d+\.\d+),([+-]?\d+\.\d+):([01])\]$").unwrap();
+
+            if let Some(captures) = regex.captures(value) {
+                let x = captures[1]
+                    .parse::<f64>()
+                    .map_err(|_| ControllerError::ParseError {
+                        message: "Invalid X coordinate".to_string(),
+                        input: value.to_string(),
+                    })?;
+                let y = captures[2]
+                    .parse::<f64>()
+                    .map_err(|_| ControllerError::ParseError {
+                        message: "Invalid Y coordinate".to_string(),
+                        input: value.to_string(),
+                    })?;
+                let z = captures[3]
+                    .parse::<f64>()
+                    .map_err(|_| ControllerError::ParseError {
+                        message: "Invalid Z coordinate".to_string(),
+                        input: value.to_string(),
+                    })?;
+
+                Ok(Response::Probe {
+                    raw: value.to_string(),
+                    coords: (x, y, z),
+                })
+            } else {
+                Err(ControllerError::ParseError {
+                    message: "Invalid probe response format".to_string(),
+                    input: value.to_string(),
+                })
+            }
+        } else {
+            Err(ControllerError::ParseError {
+                message: "Not a valid response".to_string(),
+                input: value.to_string(),
+            })
         }
     }
 }
@@ -56,13 +113,22 @@ pub enum Push {
 impl fmt::Display for Push {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Push::Report(report) => write!(f, "{}", report.string),
+            Push::Report(report) => write!(f, "{}", report.raw),
         }
     }
 }
 
+impl TryFrom<&str> for Push {
+    type Error = ControllerError;
+
+    fn try_from(value: &str) -> Result<Self, ControllerError> {
+        let report = Report::try_from(value)?;
+        Ok(Push::Report(report))
+    }
+}
+
 pub struct Report {
-    pub string: String,
+    pub raw: String,
     pub status: Option<Status>,
     pub mpos: Option<(f32, f32, f32)>,
     pub bf: Option<(usize, usize)>,
@@ -72,7 +138,7 @@ pub enum Status {
     Idle,
     Home,
     Jog,
-    Unknown(String),
+    Unknown,
 }
 
 impl From<&str> for Status {
@@ -81,7 +147,7 @@ impl From<&str> for Status {
             "Idle" => Status::Idle,
             "Home" => Status::Home,
             "Jog" => Status::Jog,
-            _ => Status::Unknown(value.to_string()),
+            _ => Status::Unknown,
         }
     }
 }
@@ -102,7 +168,7 @@ impl TryFrom<&str> for Report {
         let parts: Vec<&str> = content.split("|").collect();
 
         let mut report = Report {
-            string: value.to_string(),
+            raw: value.to_string(),
             status: Some(Status::from(parts[0])),
             mpos: None,
             bf: None,

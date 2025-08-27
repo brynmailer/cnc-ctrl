@@ -5,10 +5,10 @@ A Rust-based CNC control system designed for Raspberry Pi 4B, providing GPIO-bas
 ## Features
 
 - Serial communication with grblHAL CNC controllers
-- GPIO input handling to support a custom probing attachment, and buttons for control flow (designed for Raspberry Pi)
+- GPIO input handling to support buttons for control flow (designed for Raspberry Pi)
 - Multi-threaded message passing architecture for minimal latency when issuing commands over serial
 - Configurable workflow steps (G-code execution and bash commands)
-- Automatic probe point logging and data transformation
+- Configurable logging
 
 ## Installation
 
@@ -46,11 +46,11 @@ Use the provided justfile command to build and sync to your target device:
 just build-sync <DESTINATION> <PASSWORD>
 ```
 
-## Configuration
+## Job configuration
 
-The application expects a configuration file at `~/.config/cnc-ctrl/config.yml`. See `docs/example-config.yml` for a complete example.
+The `cnc-ctrl` command expects a path to a job configuration file as its first positional argument. This configuration describes general operational settings, as well as the tasks that should be executed as part of the job.
 
-### Configuration Options
+### Options
 
 #### Logs
 ```yaml
@@ -77,15 +77,7 @@ grbl:
 #### GPIO Inputs
 ```yaml
 inputs:
-  signal:               # Manual signal input
-    pin: 17             # GPIO pin number
-    debounce_ms: 30     # Debounce delay in milliseconds
-  probe_xy:             # XY probe input
-    pin: 27
-    debounce_ms: 30
-  probe_z:              # Z probe input
-    pin: 22
-    debounce_ms: 30
+  signal: 17              # Manual signal butoon for control flow
 ```
 
 #### Workflow Steps
@@ -93,17 +85,16 @@ Define a sequence of operations to execute:
 
 ```yaml
 steps:
-  - type: gcode                                   # Execute G-code file
-    path: "~/cnc/tanks/probe.gcode"               # Path to G-code file
-    check: false                                  # Skip G-code syntax checking
-    wait_for_signal: true                         # Wait for signal input (default: true)
-    points:                                       # Probe point logging (optional)
-      save: true                                  # Save probe points to file
-      path: "~/cnc/tanks/points/tank-{%t}.csv"    # Output file path
+  - type: gcode                                         # Execute G-code file
+    path: "~/path/to/step.gcode"                        # Path to G-code file
+    check: false                                        # Skip G-code syntax checking
+    wait_for_signal: true                               # Wait for signal input (default: true)
+    probe:                                              # Probe point logging (optional)
+      save_path: "~/path/to/probe-points.csv"           # Output file path
   
-  - type: bash                                    # Execute bash command
-    wait_for_signal: false                        # Don't wait for signal (default: false)
-    command: "python ~/cnc/transform.py -p ~/cnc/points/tank-{%t}.csv -o ~/cnc/cut.gcode"
+  - type: bash                                          # Execute bash command
+    wait_for_signal: false                              # Don't wait for signal (default: false)
+    command: "python some-script.py"
 ```
 
 ### Template Variables
@@ -114,9 +105,10 @@ The `{%t}` template variable in file paths is replaced with a timestamp (format:
 
 - **gcode**: Execute G-code files via serial communication with grblHAL
   - `path`: Path to G-code file
-  - `check`: Validate G-code syntax before execution (default: true)
+  - `check`: Validate G-code syntax via Grbl check mode before execution (default: true)
   - `wait_for_signal`: Wait for signal input before execution (default: true)
-  - `points`: Optional probe point logging configuration
+  - `probe`: Optional probe point logging configuration
+    - `save_path`: Path to file that probed points should be saved to (points are output in csv format)
 
 - **bash**: Execute shell commands
   - `command`: Shell command to execute
@@ -124,12 +116,12 @@ The `{%t}` template variable in file paths is replaced with a timestamp (format:
 
 ## Usage
 
-1. Create your configuration file at `~/.config/cnc-ctrl/config.yml`
+1. Create your job config file as described above
 2. Connect your grblHAL controller via serial
-3. Wire GPIO inputs according to your configuration
+3. Wire GPIO signal input according to your configuration
 4. Run the application:
    ```bash
-   ./cnc-ctrl
+   cnc-ctrl ~/path/to/job-config.yml
    ```
 
-The application will execute the configured workflow steps in sequence, waiting for signal inputs as specified in the configuration.
+The application will execute the configured workflow steps in sequence, waiting for signal input before proceeding with steps as specified in the job configuration.
