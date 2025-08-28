@@ -13,14 +13,14 @@ use log::{LevelFilter, error, info, warn};
 use rppal::gpio::{Gpio, InputPin, Trigger};
 use simplelog::*;
 
-use config::{CncConfig, apply_template, expand_path};
+use config::{JobConfig, apply_template, expand_path};
 use controller::Controller;
 
 struct GpioInputs {
     signal: InputPin,
 }
 
-fn setup_gpio(config: &CncConfig) -> Result<GpioInputs, Box<dyn std::error::Error>> {
+fn setup_gpio(config: &JobConfig) -> Result<GpioInputs, Box<dyn std::error::Error>> {
     let gpio = Gpio::new()?;
 
     let signal = gpio.get(config.inputs.signal.pin)?.into_input_pullup();
@@ -28,7 +28,7 @@ fn setup_gpio(config: &CncConfig) -> Result<GpioInputs, Box<dyn std::error::Erro
     Ok(GpioInputs { signal })
 }
 
-fn setup_logging(config: &CncConfig) -> Result<(), Box<dyn std::error::Error>> {
+fn setup_logging(config: &JobConfig) -> Result<(), Box<dyn std::error::Error>> {
     let log_level = if config.logs.verbose {
         LevelFilter::Debug
     } else {
@@ -70,13 +70,21 @@ fn setup_logging(config: &CncConfig) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), String> {
-    let config =
-        CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() != 2 {
+        return Err("Usage: cnc-ctrl <path-to-job-config>".to_string());
+    }
+
+    let config_path = &args[1];
+    let config = JobConfig::load(config_path).map_err(|error| {
+        format!(
+            "Failed to load configuration from '{}': {}",
+            config_path, error
+        )
+    })?;
 
     setup_logging(&config).map_err(|error| format!("Failed to setup logging: {}", error))?;
-
-    let config =
-        CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
 
     let serial = serialport::new(&config.serial.port, config.serial.baudrate)
         .timeout(Duration::from_millis(config.serial.timeout_ms))

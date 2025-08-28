@@ -1,7 +1,7 @@
 mod bash;
 mod gcode;
 
-use super::config::{CncConfig, Step};
+use super::config::{JobConfig, Step};
 use super::controller::Controller;
 
 use bash::execute_bash_step;
@@ -19,7 +19,7 @@ impl Step {
         &self,
         controller: &Controller,
         timestamp: &str,
-        config: &CncConfig,
+        config: &JobConfig,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match self {
             Step::Gcode(step) => execute_gcode_step(

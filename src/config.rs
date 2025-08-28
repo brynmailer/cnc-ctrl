@@ -4,7 +4,7 @@ use config::{Config, File};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
-pub struct CncConfig {
+pub struct JobConfig {
     pub logs: LogsConfig,
     pub serial: SerialConfig,
     pub grbl: GrblConfig,
@@ -81,23 +81,15 @@ fn default_check() -> bool {
     true
 }
 
-impl CncConfig {
-    pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let config_path = Self::get_config_path()?;
+impl JobConfig {
+    pub fn load(config_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let settings = Config::builder()
-            .add_source(File::with_name(&config_path))
+            .add_source(File::with_name(config_path))
             .build()?;
 
-        let config: CncConfig = settings.try_deserialize()?;
+        let config: JobConfig = settings.try_deserialize()?;
 
         Ok(config)
-    }
-
-    fn get_config_path() -> Result<String, Box<dyn std::error::Error>> {
-        let home_dir = env::home_dir().ok_or("Failed to get home directory")?;
-        let config_path = home_dir.join(".config").join("cnc-ctrl").join("config.yml");
-
-        Ok(config_path.to_string_lossy().to_string())
     }
 }
 
