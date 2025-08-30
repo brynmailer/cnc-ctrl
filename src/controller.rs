@@ -4,11 +4,15 @@ pub mod serial;
 
 use log::{debug, error};
 use std::fmt;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use std::{sync::Arc, thread};
 
+use anyhow::{Context, Result};
 use crossbeam::channel;
+use serde::Deserialize;
 
 use command::Command;
 use message::{Message, Push, Response};
@@ -38,22 +42,60 @@ impl fmt::Display for ControllerError {
     }
 }
 
-pub struct Controller {
-    pub prio_serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Push>)>,
-    pub serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Response>)>,
-    pub running: Arc<AtomicBool>,
+#[derive(Debug, Deserialize)]
+enum ConnectionConfig {
+    /*
+    Serial {
+        port: String,
+        baudrate: u32,
+        timeout: u64,
+    },
+    */
+    TCP {
+        address: String,
+        port: u16,
+        timeout: u64,
+    },
+}
 
-    serial_handles: Option<(thread::JoinHandle<()>, thread::JoinHandle<()>)>,
+pub struct Controller {
+    pub config: ControllerConfig,
+    connection: TcpStream,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ControllerConfig {
+    pub connection: ConnectionConfig,
+    pub rx_capacity: usize,
 }
 
 impl Controller {
-    pub fn new() -> Self {
-        Self {
-            prio_serial_channel: None,
-            serial_channel: None,
-            serial_handles: None,
-            running: Arc::new(AtomicBool::new(false)),
-        }
+    pub fn connect(config: ControllerConfig) -> Result<Controller> {
+        let connection = match config.connection {
+            ConnectionConfig::TCP {
+                ref address,
+                port,
+                timeout,
+            } => (|| -> Result<TcpStream> {
+                let stream = TcpStream::connect_timeout(
+                    &(format!("{}:{}", address, port).parse()?),
+                    Duration::from_millis(timeout),
+                )?;
+
+
+                let (rx, tx) = (
+                    BufReader::new(stream.try_clone()?),
+                    BufWriter::new(stream.try_clone()?),
+                );
+
+                rx.read_to_end
+
+                Ok(stream)
+            })()
+            .with_context(|| format!("Failed to open TCP connection to {}:{}", address, port))?,
+        };
+
+        Ok(Self { config, connection })
     }
 
     pub fn start(&mut self, serial: Box<dyn serialport::SerialPort>, verbose_logging: bool) {

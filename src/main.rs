@@ -13,14 +13,14 @@ use log::{LevelFilter, error, info, warn};
 use rppal::gpio::{Gpio, InputPin, Trigger};
 use simplelog::*;
 
-use config::{JobConfig, apply_template, expand_path};
+use config::{Config, apply_template, expand_path};
 use controller::Controller;
 
 struct GpioInputs {
     signal: InputPin,
 }
 
-fn setup_gpio(config: &JobConfig) -> Result<GpioInputs, Box<dyn std::error::Error>> {
+fn setup_gpio(config: &Config) -> Result<GpioInputs, Box<dyn std::error::Error>> {
     let gpio = Gpio::new()?;
 
     let signal = gpio.get(config.inputs.signal.pin)?.into_input_pullup();
@@ -28,7 +28,7 @@ fn setup_gpio(config: &JobConfig) -> Result<GpioInputs, Box<dyn std::error::Erro
     Ok(GpioInputs { signal })
 }
 
-fn setup_logging(config: &JobConfig) -> Result<(), Box<dyn std::error::Error>> {
+fn setup_logging(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let log_level = if config.logs.verbose {
         LevelFilter::Debug
     } else {
@@ -77,7 +77,7 @@ fn main() -> Result<(), String> {
     }
 
     let config_path = &args[1];
-    let config = JobConfig::load(config_path).map_err(|error| {
+    let config = Config::load(config_path).map_err(|error| {
         format!(
             "Failed to load configuration from '{}': {}",
             config_path, error
