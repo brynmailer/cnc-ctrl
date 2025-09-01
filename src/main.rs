@@ -1,5 +1,6 @@
 mod config;
-mod controller;
+mod connection;
+mod machine;
 mod steps;
 
 use std::fs::{self, File};
@@ -14,7 +15,7 @@ use rppal::gpio::{Gpio, InputPin, Trigger};
 use simplelog::*;
 
 use config::{Config, apply_template, expand_path};
-use controller::Controller;
+use controller::Machine;
 
 struct GpioInputs {
     signal: InputPin,
@@ -94,7 +95,7 @@ fn main() -> Result<(), String> {
         .try_clone()
         .map_err(|error| format!("Failed to clone serial connection: {}", error))?;
 
-    let mut controller = Controller::new();
+    let mut controller = Machine::new();
     let controller_running = controller.running.clone();
     controller.start(serial, config.logs.verbose);
 

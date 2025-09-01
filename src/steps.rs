@@ -2,7 +2,7 @@ mod bash;
 mod gcode;
 
 use super::config::{JobConfig, Step};
-use super::controller::Controller;
+use super::controller::Machine;
 
 use bash::execute_bash_step;
 use gcode::execute_gcode_step;
@@ -17,7 +17,7 @@ impl Step {
 
     pub fn execute(
         &self,
-        controller: &Controller,
+        controller: &Machine,
         timestamp: &str,
         config: &JobConfig,
     ) -> Result<(), Box<dyn std::error::Error>> {

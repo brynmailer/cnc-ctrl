@@ -7,11 +7,11 @@ use crate::config::{GcodeStepConfig, ProbeConfig, apply_template, expand_path};
 use crate::controller::command::Command;
 use crate::controller::message::{Report, Response, Status};
 use crate::controller::serial::{buffered_stream, wait_for_report};
-use crate::controller::{Controller, ControllerError};
+use crate::controller::{ControllerError, Machine};
 
 pub fn execute_gcode_step(
     step: &GcodeStepConfig,
-    controller: &Controller,
+    controller: &Machine,
     timestamp: &str,
     rx_buffer_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
