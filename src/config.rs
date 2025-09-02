@@ -8,7 +8,6 @@ use serde::Deserialize;
 pub struct JobConfig {
     pub machine: MachineConfig,
     pub logs: LogsConfig,
-    pub grbl: GrblConfig,
     pub inputs: InputsConfig,
     pub steps: Vec<Step>,
 }
@@ -20,7 +19,9 @@ pub struct MachineConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
 pub enum ConnectionConfig {
+    #[serde(rename = "tcp")]
     TCP {
         address: String,
         port: u16,

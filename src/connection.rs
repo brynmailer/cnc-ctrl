@@ -42,37 +42,40 @@ impl<T: Device> InactiveConnection<T> {
             .take()
             .context("Attempted to open connection without a device")?;
 
+        let mut writer = io::BufWriter::new(device.try_clone()?);
         let mut reader = io::BufReader::new(device.try_clone()?);
-        let writer = io::BufWriter::new(device.try_clone()?);
 
         let (cmd_tx, cmd_rx) = channel::bounded(0);
         let (msg_tx, msg_rx) = channel::unbounded();
 
         let handle = thread::spawn(move || {
             let mut received = String::new();
+            let mut queued: VecDeque<Command> = VecDeque::new();
+            let mut sent: VecDeque<Command> = VecDeque::new();
 
-            let mut grbl_queue: VecDeque<Command> = VecDeque::new();
-
-            loop {
+            'outer: loop {
                 match reader.read_line(&mut received) {
                     Ok(0) => {
                         warn!("EOF reached");
                         break;
                     }
                     Ok(_) => {
-                        let message = Message::from(received.trim());
+                        let msg = Message::from(received.trim());
 
-                        match message {
-                            Message::Response(_) => match grbl_queue.pop_front() {
+                        match msg {
+                            Message::Response(_) => match sent.pop_front() {
                                 Some(Command::Block(_, Some(sequence))) => {
-                                    info!("    RECV:{} < {}", sequence, message)
+                                    info!("    RECV:{} < {}", sequence, msg)
                                 }
                                 _ => (),
                             },
-                            _ => info!("    RECV < {}", message),
+                            _ => info!("    RECV < {}", msg),
                         }
 
-                        msg_tx.send(message);
+                        if let Err(channel::SendError(_)) = msg_tx.send(msg) {
+                            warn!("Channel disconnected");
+                            break;
+                        };
                     }
                     Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => (),
                     Err(err) => {
@@ -81,7 +84,63 @@ impl<T: Device> InactiveConnection<T> {
                     }
                 }
 
-                while let Ok(command) = cmd_rx.recv() {}
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(cmd) => match cmd {
+                            Command::Realtime(_) => queued.push_front(cmd),
+                            Command::Block(..) => queued.push_back(cmd),
+                        },
+                        Err(channel::TryRecvError::Empty) => break,
+                        Err(channel::TryRecvError::Disconnected) => {
+                            warn!("Channel disconnected");
+                            break 'outer;
+                        }
+                    }
+                }
+
+                let buffered_bytes = sent.iter().fold(0, |sum, cmd| match cmd {
+                    Command::Block(block, _) => sum + (block.len() + 1),
+                    Command::Realtime(..) => sum,
+                });
+
+                match queued.pop_front() {
+                    Some(cmd) => {
+                        match cmd {
+                            Command::Block(ref block, ref sequence) => {
+                                if buffered_bytes + (block.len() + 1) < 1023 {
+                                    if let Err(err) = write!(writer, "{}\n", block) {
+                                        error!("Failed to send command '{}': {}", cmd, err);
+                                        queued.push_front(cmd);
+                                    } else {
+                                        if let Some(number) = sequence {
+                                            info!("SEND:{} > {}", number, cmd);
+                                        } else {
+                                            info!("SEND: > {}", cmd);
+                                        }
+
+                                        sent.push_back(cmd);
+                                    }
+                                } else {
+                                    queued.push_front(cmd);
+                                }
+                            }
+                            Command::Realtime(_) => {
+                                if let Err(err) = write!(writer, "{}", cmd) {
+                                    error!("Failed to send command '{}': {}", cmd, err);
+                                    queued.push_front(cmd);
+                                } else {
+                                    info!("SEND > {}", cmd);
+                                }
+                            }
+                        }
+
+                        if let Err(err) = writer.flush() {
+                            error!("Failed to write to connection: {}", err);
+                            break;
+                        }
+                    }
+                    None => (),
+                }
             }
 
             warn!("Connection closed");

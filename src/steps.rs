@@ -11,8 +11,7 @@ use gcode::execute_gcode_step;
 impl Step {
     pub fn should_wait(&self) -> bool {
         match self {
-            Step::Gcode(step) => step.wait_for_signal,
-            Step::Bash(step) => step.wait_for_signal,
+            Step::Gcode(step) | Step::Bash(step) => step.wait_for_signal,
         }
     }
 

@@ -20,7 +20,7 @@ pub enum Realtime {
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Command::Realtime(command) => write!(f, "{:#x}", *command as u8),
+            Command::Realtime(command) => write!(f, "RT {:#x}", *command as u8),
             Command::Block(command, _) => write!(f, "{}", command),
         }
     }
