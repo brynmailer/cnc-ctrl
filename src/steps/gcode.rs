@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
+use anyhow::Result;
 use log::{error, info, warn};
 
 use crate::config::{GcodeStepConfig, ProbeConfig, apply_template, expand_path};
@@ -11,10 +12,9 @@ use crate::controller::{ControllerError, Machine};
 
 pub fn execute_gcode_step(
     step: &GcodeStepConfig,
-    controller: &Machine,
+    machine: &Machine,
     timestamp: &str,
-    rx_buffer_size: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
     let expanded_path = expand_path(&step.path);
     let templated_path = apply_template(&expanded_path, timestamp);
 

@@ -1,9 +1,10 @@
 mod bash;
 mod gcode;
 
-use super::config::{JobConfig, Step};
-use super::controller::Machine;
+use anyhow::Result;
 
+use crate::config::{JobConfig, Step};
+use crate::machine::Machine;
 use bash::execute_bash_step;
 use gcode::execute_gcode_step;
 
@@ -15,19 +16,9 @@ impl Step {
         }
     }
 
-    pub fn execute(
-        &self,
-        controller: &Machine,
-        timestamp: &str,
-        config: &JobConfig,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn execute(&self, timestamp: &str, machine: &Machine, config: &JobConfig) -> Result<()> {
         match self {
-            Step::Gcode(step) => execute_gcode_step(
-                step,
-                controller,
-                timestamp,
-                config.grbl.rx_buffer_size_bytes,
-            ),
+            Step::Gcode(step) => execute_gcode_step(step, machine, timestamp),
             Step::Bash(step) => execute_bash_step(step, timestamp),
         }
     }

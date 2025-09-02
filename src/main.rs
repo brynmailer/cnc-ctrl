@@ -4,32 +4,23 @@ mod machine;
 mod steps;
 
 use std::fs::{self, File};
-use std::io::Write;
-use std::sync::atomic::Ordering;
-use std::thread;
+use std::sync::{self, atomic};
 use std::time::Duration;
 
+use anyhow::{Context, Result, bail};
 use chrono::Local;
-use log::{LevelFilter, error, info, warn};
+use log::{LevelFilter, info, warn};
 use rppal::gpio::{Gpio, InputPin, Trigger};
 use simplelog::*;
 
-use config::{Config, apply_template, expand_path};
-use controller::Machine;
+use config::{JobConfig, apply_template, expand_path};
+use machine::Machine;
 
 struct GpioInputs {
     signal: InputPin,
 }
 
-fn setup_gpio(config: &Config) -> Result<GpioInputs, Box<dyn std::error::Error>> {
-    let gpio = Gpio::new()?;
-
-    let signal = gpio.get(config.inputs.signal.pin)?.into_input_pullup();
-
-    Ok(GpioInputs { signal })
-}
-
-fn setup_logging(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+fn setup_logging(config: &JobConfig) -> Result<()> {
     let log_level = if config.logs.verbose {
         LevelFilter::Debug
     } else {
@@ -47,7 +38,7 @@ fn setup_logging(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let log_file = File::create(&templated_path)
-            .map_err(|e| format!("Failed to create log file '{}': {}", templated_path, e))?;
+            .with_context(|| format!("Failed to create log file {}", templated_path))?;
 
         CombinedLogger::init(vec![
             TermLogger::new(
@@ -70,59 +61,47 @@ fn setup_logging(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn main() -> Result<(), String> {
+fn setup_gpio(config: &JobConfig) -> Result<GpioInputs> {
+    let gpio = Gpio::new()?;
+
+    let signal = gpio.get(config.inputs.signal.pin)?.into_input_pullup();
+
+    Ok(GpioInputs { signal })
+}
+
+fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() != 2 {
-        return Err("Usage: cnc-ctrl <path-to-job-config>".to_string());
+        bail!("Usage: cnc-ctrl <path-to-job-config>".to_string());
     }
 
     let config_path = &args[1];
-    let config = Config::load(config_path).map_err(|error| {
-        format!(
-            "Failed to load configuration from '{}': {}",
-            config_path, error
-        )
-    })?;
+    let config = JobConfig::load(config_path)
+        .with_context(|| format!("Failed to load job configuration from {}", config_path))?;
 
-    setup_logging(&config).map_err(|error| format!("Failed to setup logging: {}", error))?;
+    setup_logging(&config).context("Failed to setup logging")?;
 
-    let serial = serialport::new(&config.serial.port, config.serial.baudrate)
-        .timeout(Duration::from_millis(config.serial.timeout_ms))
-        .open()
-        .map_err(|error| format!("Failed to open serial connection: {}", error))?;
-    let mut serial_clone = serial
-        .try_clone()
-        .map_err(|error| format!("Failed to clone serial connection: {}", error))?;
+    let machine = Machine::connect(&config.machine).context("Failed to initialize machine")?;
 
-    let mut controller = Machine::new();
-    let controller_running = controller.running.clone();
-    controller.start(serial, config.logs.verbose);
-
-    ctrlc::set_handler(move || {
-        warn!("Shutting down...");
-
-        controller_running.store(false, Ordering::Relaxed);
-        thread::sleep(Duration::from_secs(2));
-
-        if let Err(error) = serial_clone.write_all(&[0x18]) {
-            error!("Failed to soft reset Grbl: {}", error);
-        }
-    })
-    .map_err(|error| format!("Failed to set up exit handler: {}", error))?;
-
-    let mut gpio_inputs =
-        setup_gpio(&config).map_err(|error| format!("Failed to setup GPIO pins: {}", error))?;
-
+    let mut gpio_inputs = setup_gpio(&config).context("Failed to setup GPIO pins")?;
     gpio_inputs
         .signal
         .set_interrupt(
             Trigger::RisingEdge,
             Some(Duration::from_millis(config.inputs.signal.debounce_ms)),
         )
-        .map_err(|error| format!("Failed to set signal interrupt: {}", error))?;
+        .context("Failed to set signal interrupt")?;
 
-    while controller.running.load(Ordering::Relaxed) {
+    let alive = sync::Arc::new(atomic::AtomicBool::new(true));
+
+    let alive_clone = alive.clone();
+    ctrlc::set_handler(move || {
+        warn!("Shutting down gracefully...");
+        alive_clone.store(false, atomic::Ordering::Relaxed);
+    })?;
+
+    while alive.load(atomic::Ordering::Relaxed) {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
         for (i, step) in config.steps.iter().enumerate() {
@@ -131,17 +110,17 @@ fn main() -> Result<(), String> {
                 gpio_inputs
                     .signal
                     .poll_interrupt(true, None)
-                    .map_err(|error| format!("Failed to poll signal interrupt: {}", error))?;
+                    .context("Failed to poll signal interrupt")?;
             }
 
             info!("Executing step {} (timestamp: {})", i + 1, timestamp);
 
-            let result = step.execute(&controller, &timestamp, &config);
+            let result = step.execute(&timestamp, &machine, &config);
 
             match result {
                 Ok(()) => info!("Step {} completed successfully", i + 1),
                 Err(e) => {
-                    return Err(format!("Step {} failed: {}", i + 1, e));
+                    bail!("Step {} failed: {}", i + 1, e);
                 }
             }
         }

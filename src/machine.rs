@@ -1,23 +1,17 @@
 use std::{net, time};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
 
-use crate::connection::{ActiveConnection, Connection, ConnectionConfig};
+use crate::config::{ConnectionConfig, MachineConfig};
+use crate::connection::{ActiveConnection, Connection};
 
-pub struct Machine {
-    pub config: MachineConfig,
+pub struct Machine<'a> {
+    pub config: &'a MachineConfig,
     connection: ActiveConnection<net::TcpStream>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct MachineConfig {
-    pub connection: ConnectionConfig,
-    pub rx_capacity: usize,
-}
-
-impl Machine {
-    pub fn connect(config: MachineConfig) -> Result<Machine> {
+impl<'a> Machine<'a> {
+    pub fn connect(config: &'a MachineConfig) -> Result<Machine> {
         let device = match config.connection {
             ConnectionConfig::TCP {
                 ref address,

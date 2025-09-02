@@ -8,19 +8,9 @@ use std::{net, thread};
 use anyhow::{Context, Result};
 use crossbeam::channel;
 use log::{error, info, warn};
-use serde::Deserialize;
 
 use self::command::Command;
 use self::message::Message;
-
-#[derive(Debug, Deserialize)]
-pub enum ConnectionConfig {
-    TCP {
-        address: String,
-        port: u16,
-        timeout: u64,
-    },
-}
 
 pub enum Connection<T: Device> {
     Inactive(InactiveConnection<T>),
@@ -55,7 +45,7 @@ impl<T: Device> InactiveConnection<T> {
         let mut reader = io::BufReader::new(device.try_clone()?);
         let writer = io::BufWriter::new(device.try_clone()?);
 
-        let (cmd_tx, cmd_rx) = channel::unbounded();
+        let (cmd_tx, cmd_rx) = channel::bounded(0);
         let (msg_tx, msg_rx) = channel::unbounded();
 
         let handle = thread::spawn(move || {
@@ -66,6 +56,7 @@ impl<T: Device> InactiveConnection<T> {
             loop {
                 match reader.read_line(&mut received) {
                     Ok(0) => {
+                        warn!("EOF reached");
                         break;
                     }
                     Ok(_) => {

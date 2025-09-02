@@ -1,15 +1,31 @@
 use std::env;
 
+use anyhow::Result;
 use config::{Config, File};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct JobConfig {
+    pub machine: MachineConfig,
     pub logs: LogsConfig,
-    pub serial: SerialConfig,
     pub grbl: GrblConfig,
     pub inputs: InputsConfig,
     pub steps: Vec<Step>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MachineConfig {
+    pub connection: ConnectionConfig,
+    pub rx_capacity: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub enum ConnectionConfig {
+    TCP {
+        address: String,
+        port: u16,
+        timeout: u64,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,7 +98,7 @@ fn default_check() -> bool {
 }
 
 impl JobConfig {
-    pub fn load(config_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load(config_path: &str) -> Result<Self> {
         let settings = Config::builder()
             .add_source(File::with_name(config_path))
             .build()?;
