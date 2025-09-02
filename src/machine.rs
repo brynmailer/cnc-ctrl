@@ -33,7 +33,7 @@ impl Machine {
 
                 Ok(stream)
             })()
-            .with_context(|| format!("Failed to open TCP connection to {}:{}", address, port))?,
+            .with_context(|| format!("Failed to create TCP connection to {}:{}", address, port))?,
         };
 
         let connection = Connection::new(device)

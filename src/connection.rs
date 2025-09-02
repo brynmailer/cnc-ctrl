@@ -27,6 +27,14 @@ pub enum Connection<T: Device> {
     Active(ActiveConnection<T>),
 }
 
+impl<T: Device> Connection<T> {
+    pub fn new(device: T) -> InactiveConnection<T> {
+        InactiveConnection {
+            device: Some(device),
+        }
+    }
+}
+
 pub struct InactiveConnection<T: Device> {
     device: Option<T>,
 }
@@ -37,16 +45,8 @@ pub struct ActiveConnection<T: Device> {
     handle: thread::JoinHandle<()>,
 }
 
-impl<T: Device> Connection<T> {
-    pub fn new(device: T) -> InactiveConnection<T> {
-        InactiveConnection {
-            device: Some(device),
-        }
-    }
-}
-
 impl<T: Device> InactiveConnection<T> {
-    pub fn open(&mut self) -> Result<ActiveConnection<T>> {
+    pub fn open(mut self) -> Result<ActiveConnection<T>> {
         let device = self
             .device
             .take()
@@ -66,7 +66,6 @@ impl<T: Device> InactiveConnection<T> {
             loop {
                 match reader.read_line(&mut received) {
                     Ok(0) => {
-                        warn!("Connection closed");
                         break;
                     }
                     Ok(_) => {
@@ -74,9 +73,9 @@ impl<T: Device> InactiveConnection<T> {
 
                         match message {
                             Message::Response(_) => match grbl_queue.pop_front() {
-                                Some(
-                                    Command::Gcode(_, Some(line)) | Command::System(_, Some(line)),
-                                ) => info!("    RECV:{} < {}", line, message),
+                                Some(Command::Block(_, Some(sequence))) => {
+                                    info!("    RECV:{} < {}", sequence, message)
+                                }
                                 _ => (),
                             },
                             _ => info!("    RECV < {}", message),
@@ -91,9 +90,10 @@ impl<T: Device> InactiveConnection<T> {
                     }
                 }
 
-                // TODO: Write next command in channel, prioritising realtime commands
                 while let Ok(command) = cmd_rx.recv() {}
             }
+
+            warn!("Connection closed");
         });
 
         Ok(ActiveConnection {
@@ -101,6 +101,14 @@ impl<T: Device> InactiveConnection<T> {
             channel: (cmd_tx, msg_rx),
             handle,
         })
+    }
+}
+
+impl<T: Device> ActiveConnection<T> {
+    pub fn close(self) -> InactiveConnection<T> {
+        InactiveConnection {
+            device: Some(self.device),
+        }
     }
 }
 
