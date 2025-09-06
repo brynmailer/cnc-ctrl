@@ -1,0 +1,7 @@
+connection:
+  address: 192.160.0.1
+  port: 2345
+  timeout: 60
+
+logging:
+

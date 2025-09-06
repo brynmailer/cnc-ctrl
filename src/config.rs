@@ -6,41 +6,38 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct JobConfig {
-    pub machine: MachineConfig,
-    pub logs: LogsConfig,
+    pub connection: ConnectionConfig,
+    pub logging: LoggingConfig,
     pub inputs: InputsConfig,
     pub steps: Vec<Step>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct MachineConfig {
-    pub connection: ConnectionConfig,
-    pub rx_capacity: usize,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum ConnectionConfig {
-    #[serde(rename = "tcp")]
-    TCP {
-        address: String,
-        port: u16,
-        timeout: u64,
-    },
+    Tcp(TcpConfig),
+    Serial(SerialConfig),
 }
 
 #[derive(Debug, Deserialize)]
-pub struct LogsConfig {
-    pub verbose: bool,
-    pub save: bool,
-    pub path: String,
+pub struct TcpConfig {
+    pub address: String,
+    pub port: u16,
+    pub timeout: u64,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SerialConfig {
     pub port: String,
-    pub baudrate: u32,
-    pub timeout_ms: u64,
+    pub baud_rate: u32,
+    pub timeout: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoggingConfig {
+    pub verbose: bool,
+    pub save: bool,
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,11 +57,9 @@ pub struct InputPin {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum Step {
-    #[serde(rename = "gcode")]
     Gcode(GcodeStepConfig),
-    #[serde(rename = "bash")]
     Bash(BashStepConfig),
 }
 

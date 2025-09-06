@@ -1,6 +1,5 @@
 mod config;
 mod connection;
-mod machine;
 mod steps;
 
 use std::fs::{self, File};
@@ -13,24 +12,24 @@ use log::{LevelFilter, info, warn};
 use rppal::gpio::{Gpio, InputPin, Trigger};
 use simplelog::*;
 
-use config::{JobConfig, apply_template, expand_path};
-use machine::Machine;
+use config::{ConnectionConfig, JobConfig, apply_template, expand_path};
+use connection::Connection;
 
 struct GpioInputs {
     signal: InputPin,
 }
 
 fn setup_logging(config: &JobConfig) -> Result<()> {
-    let log_level = if config.logs.verbose {
+    let log_level = if config.logging.verbose {
         LevelFilter::Debug
     } else {
         LevelFilter::Info
     };
 
-    if config.logs.save {
+    if config.logging.save {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
-        let expanded_path = expand_path(&config.logs.path);
+        let expanded_path = expand_path(&config.logging.path);
         let templated_path = apply_template(&expanded_path, &timestamp);
 
         if let Some(parent) = std::path::Path::new(&templated_path).parent() {
@@ -82,7 +81,10 @@ fn main() -> Result<()> {
 
     setup_logging(&config).context("Failed to setup logging")?;
 
-    let machine = Machine::connect(&config.machine).context("Failed to initialize machine")?;
+    let connection = match config.connection {
+        ConnectionConfig::Tcp(tcp_config) => Connection::tcp(&tcp_config)?,
+        ConnectionConfig::Serial(serial_config) => unimplemented!(),
+    };
 
     let mut gpio_inputs = setup_gpio(&config).context("Failed to setup GPIO pins")?;
     gpio_inputs
@@ -115,7 +117,7 @@ fn main() -> Result<()> {
 
             info!("Executing step {} (timestamp: {})", i + 1, timestamp);
 
-            let result = step.execute(&timestamp, &machine, &config);
+            let result = step.execute(&timestamp, &connection, &config);
 
             match result {
                 Ok(()) => info!("Step {} completed successfully", i + 1),

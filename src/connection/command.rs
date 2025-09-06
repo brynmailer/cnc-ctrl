@@ -2,7 +2,7 @@ use std::fmt;
 
 pub enum Command {
     Realtime(Realtime),
-    Block(String, Option<usize>),
+    Block(String),
 }
 
 #[repr(u8)]
@@ -20,8 +20,8 @@ pub enum Realtime {
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Command::Realtime(command) => write!(f, "RT {:#x}", *command as u8),
-            Command::Block(command, _) => write!(f, "{}", command),
+            Command::Realtime(cmd) => write!(f, "RT {:#x}", *cmd as u8),
+            Command::Block(cmd) => write!(f, "{}", cmd),
         }
     }
 }

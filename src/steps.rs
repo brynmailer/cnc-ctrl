@@ -4,7 +4,8 @@ mod gcode;
 use anyhow::Result;
 
 use crate::config::{JobConfig, Step};
-use crate::machine::Machine;
+use crate::connection::{ActiveConnection, Device};
+
 use bash::execute_bash_step;
 use gcode::execute_gcode_step;
 
@@ -15,9 +16,14 @@ impl Step {
         }
     }
 
-    pub fn execute(&self, timestamp: &str, machine: &Machine, config: &JobConfig) -> Result<()> {
+    pub fn execute<T: Device>(
+        &self,
+        timestamp: &str,
+        connection: &ActiveConnection<T>,
+        config: &JobConfig,
+    ) -> Result<()> {
         match self {
-            Step::Gcode(step) => execute_gcode_step(step, machine, timestamp),
+            Step::Gcode(step) => execute_gcode_step(step, connection, timestamp),
             Step::Bash(step) => execute_bash_step(step, timestamp),
         }
     }
