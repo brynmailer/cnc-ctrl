@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, net::SocketAddr};
 
 use config::{Config, File};
 use serde::Deserialize;
@@ -6,7 +6,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct CncConfig {
     pub logs: LogsConfig,
-    pub serial: SerialConfig,
+    pub connection: TcpConfig,
     pub grbl: GrblConfig,
     pub inputs: InputsConfig,
     pub steps: Vec<Step>,
@@ -20,9 +20,8 @@ pub struct LogsConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SerialConfig {
-    pub port: String,
-    pub baudrate: u32,
+pub struct TcpConfig {
+    pub address: SocketAddr,
     pub timeout_ms: u64,
 }
 

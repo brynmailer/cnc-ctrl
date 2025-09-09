@@ -5,6 +5,7 @@ pub mod serial;
 use log::{debug, error};
 use std::fmt;
 use std::io::{self, BufRead, Write};
+use std::net;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{sync::Arc, thread};
 
@@ -39,26 +40,26 @@ impl fmt::Display for ControllerError {
 }
 
 pub struct Controller {
-    pub prio_serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Push>)>,
-    pub serial_channel: Option<(channel::Sender<Command>, channel::Receiver<Response>)>,
+    pub prio_stream_channel: Option<(channel::Sender<Command>, channel::Receiver<Push>)>,
+    pub stream_channel: Option<(channel::Sender<Command>, channel::Receiver<Response>)>,
     pub running: Arc<AtomicBool>,
 
-    serial_handles: Option<(thread::JoinHandle<()>, thread::JoinHandle<()>)>,
+    stream_handles: Option<(thread::JoinHandle<()>, thread::JoinHandle<()>)>,
 }
 
 impl Controller {
     pub fn new() -> Self {
         Self {
-            prio_serial_channel: None,
-            serial_channel: None,
-            serial_handles: None,
+            prio_stream_channel: None,
+            stream_channel: None,
+            stream_handles: None,
             running: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn start(&mut self, serial: Box<dyn serialport::SerialPort>, verbose_logging: bool) {
-        let mut writer = io::BufWriter::new(serial.try_clone().unwrap());
-        let mut reader = io::BufReader::new(serial.try_clone().unwrap());
+    pub fn start(&mut self, stream: net::TcpStream, verbose_logging: bool) {
+        let mut writer = io::BufWriter::new(stream.try_clone().unwrap());
+        let mut reader = io::BufReader::new(stream.try_clone().unwrap());
 
         let (prio_send_tx, prio_send_rx) = channel::bounded(0);
         let (send_tx, send_rx) = channel::bounded(0);
@@ -77,11 +78,7 @@ impl Controller {
         }
 
         let send_handle = thread::spawn(move || {
-            fn send(
-                writer: &mut io::BufWriter<Box<dyn serialport::SerialPort>>,
-                command: Command,
-                verbose: bool,
-            ) {
+            fn send(writer: &mut io::BufWriter<net::TcpStream>, command: Command, verbose: bool) {
                 if verbose {
                     debug!("Serial (SND) > {}", command);
                 }
@@ -133,20 +130,20 @@ impl Controller {
             }
         });
 
-        self.prio_serial_channel = Some((prio_send_tx, prio_recv_rx));
-        self.serial_channel = Some((send_tx, recv_rx));
-        self.serial_handles = Some((send_handle, recv_handle));
+        self.prio_stream_channel = Some((prio_send_tx, prio_recv_rx));
+        self.stream_channel = Some((send_tx, recv_rx));
+        self.stream_handles = Some((send_handle, recv_handle));
     }
 
     pub fn stop(&mut self) {
-        if let Some((send_handle, recv_handle)) = self.serial_handles.take() {
+        if let Some((send_handle, recv_handle)) = self.stream_handles.take() {
             self.running.store(false, Ordering::Relaxed);
 
             let _ = send_handle.join();
             let _ = recv_handle.join();
 
-            self.prio_serial_channel.take();
-            self.serial_channel.take();
+            self.prio_stream_channel.take();
+            self.stream_channel.take();
         }
     }
 }

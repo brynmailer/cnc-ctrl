@@ -4,6 +4,7 @@ mod steps;
 
 use std::fs::{self, File};
 use std::io::Write;
+use std::net::TcpStream;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
@@ -78,17 +79,16 @@ fn main() -> Result<(), String> {
     let config =
         CncConfig::load().map_err(|error| format!("Failed to load configuration: {}", error))?;
 
-    let serial = serialport::new(&config.serial.port, config.serial.baudrate)
-        .timeout(Duration::from_millis(config.serial.timeout_ms))
-        .open()
-        .map_err(|error| format!("Failed to open serial connection: {}", error))?;
-    let mut serial_clone = serial
+    let stream = TcpStream::connect(config.connection.address)
+        .map_err(|error| format!("Failed to open connection: {}", error))?;
+
+    let mut stream_clone = stream
         .try_clone()
-        .map_err(|error| format!("Failed to clone serial connection: {}", error))?;
+        .map_err(|error| format!("Failed to clone connection: {}", error))?;
 
     let mut controller = Controller::new();
     let controller_running = controller.running.clone();
-    controller.start(serial, config.logs.verbose);
+    controller.start(stream, config.logs.verbose);
 
     ctrlc::set_handler(move || {
         warn!("Shutting down...");
@@ -96,7 +96,7 @@ fn main() -> Result<(), String> {
         controller_running.store(false, Ordering::Relaxed);
         thread::sleep(Duration::from_secs(2));
 
-        if let Err(error) = serial_clone.write_all(&[0x18]) {
+        if let Err(error) = stream_clone.write_all(&[0x18]) {
             error!("Failed to soft reset Grbl: {}", error);
         }
     })

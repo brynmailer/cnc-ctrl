@@ -55,8 +55,8 @@ pub fn execute_gcode_step(
     if step.check {
         info!("Checking G-code");
 
-        if let Some((serial_tx, _)) = controller.serial_channel.clone() {
-            serial_tx
+        if let Some((stream_tx, _)) = controller.stream_channel.clone() {
+            stream_tx
                 .send(Command::Gcode("$C".to_string()))
                 .map_err(|error| format!("Failed to enable check mode: {}", error))?;
         }
@@ -74,8 +74,8 @@ pub fn execute_gcode_step(
                 })
                 .collect();
 
-        if let Some((serial_tx, _)) = controller.serial_channel.clone() {
-            serial_tx
+        if let Some((stream_tx, _)) = controller.stream_channel.clone() {
+            stream_tx
                 .send(Command::Gcode("$C".to_string()))
                 .map_err(|error| format!("Failed to disable check mode: {}", error))?;
         }

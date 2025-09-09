@@ -14,7 +14,7 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
     controller: &Controller,
     predicate: Option<F>,
 ) -> Result<Option<Report>, ControllerError> {
-    let Some((prio_serial_tx, prio_serial_rx)) = controller.prio_serial_channel.clone() else {
+    let Some((prio_stream_tx, prio_stream_rx)) = controller.prio_stream_channel.clone() else {
         return Err(ControllerError::SerialError(
             "Controller not started".to_string(),
         ));
@@ -26,7 +26,7 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
     Ok(thread::scope(|scope| {
         scope.spawn(|| {
             while polling.load(Ordering::Relaxed) {
-                if let Err(error) = prio_serial_tx.send(Command::Realtime(b'?')) {
+                if let Err(error) = prio_stream_tx.send(Command::Realtime(b'?')) {
                     error!("Failed to poll status report: {}", error);
                 }
 
@@ -35,7 +35,7 @@ pub fn wait_for_report<F: Fn(&Report) -> bool>(
         });
 
         while running.load(Ordering::Relaxed) {
-            match prio_serial_rx.recv() {
+            match prio_stream_rx.recv() {
                 Ok(Push::Report(report)) => {
                     if let Some(matcher) = &predicate {
                         if !matcher(&report) {
@@ -64,7 +64,7 @@ pub fn buffered_stream(
     gcode: Vec<&str>,
     rx_buffer_size: usize,
 ) -> Result<Vec<(i32, Response)>, ControllerError> {
-    let Some((serial_tx, serial_rx)) = controller.serial_channel.clone() else {
+    let Some((stream_tx, stream_rx)) = controller.stream_channel.clone() else {
         return Err(ControllerError::SerialError(
             "Controller not started".to_string(),
         ));
@@ -78,7 +78,7 @@ pub fn buffered_stream(
 
     let mut receive =
         |received: &mut i32, queued_bytes: &mut VecDeque<usize>| -> Result<(), ControllerError> {
-            let response = serial_rx.recv().map_err(|error| {
+            let response = stream_rx.recv().map_err(|error| {
                 ControllerError::SerialError(format!("Failed to wait for response: {}", error))
             })?;
 
@@ -102,7 +102,7 @@ pub fn buffered_stream(
             receive(&mut received, &mut queued_bytes)?;
         }
 
-        serial_tx
+        stream_tx
             .send(Command::Gcode(line.to_string()))
             .map_err(|error| {
                 ControllerError::SerialError(format!("Failed to send G-code command: {}", error))
