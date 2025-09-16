@@ -15,6 +15,7 @@ pub use self::command::{Command, Realtime};
 pub use self::message::{Message, Response};
 
 const TIMEOUT_MS: u64 = 60000;
+const GRBL_RX_SIZE: usize = 1024;
 
 pub struct Connection;
 
@@ -136,7 +137,7 @@ impl<T: Device> InactiveConnection<T> {
                                     Command::Realtime(..) => sum,
                                 });
 
-                        if buffered_bytes < 1024 - 1 {
+                        if buffered_bytes < GRBL_RX_SIZE - 1 {
                             if let Err(err) = write!(writer, "{}\n", block) {
                                 error!("Failed to send '{}': {}", cmd, err);
                                 break;
