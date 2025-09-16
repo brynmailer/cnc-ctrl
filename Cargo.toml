@@ -9,10 +9,11 @@ config = "0.14"
 crossbeam = "0.8.4"
 ctrlc = "3.4.7"
 simplelog = "0.12"
-log = "0.4"
+log = { version = "0.4", features = ["serde"] }
 regex = "1.11.1"
 rppal = "0.22.1"
 serde = { version = "1.0", features = ["derive"] }
 serialport = "4.7.2"
 anyhow = "1.0.99"
 thiserror = "2.0.16"
+dirs = "6.0.0"

@@ -1,69 +1,60 @@
 mod config;
 mod connection;
-mod steps;
+mod task;
 
-use std::fs::{self, File};
-use std::sync::{self, atomic};
-use std::time::Duration;
+use std::sync::atomic;
+use std::{fs, sync, time};
 
 use anyhow::{Context, Result, bail};
-use chrono::Local;
-use log::{LevelFilter, info, warn};
-use rppal::gpio::{Gpio, InputPin, Trigger};
-use simplelog::*;
+use log::{info, warn};
+use rppal::gpio;
 
-use config::{ConnectionConfig, JobConfig, apply_template, expand_path};
+use config::{ConnectionKind, GeneralConfig, GpioConfig, JobConfig, LogsConfig, expand_path};
 use connection::Connection;
+use task::Task;
 
-struct GpioInputs {
-    signal: InputPin,
-}
+fn setup_logs(config: &LogsConfig) -> Result<()> {
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
 
-fn setup_logging(config: &JobConfig) -> Result<()> {
-    let log_level = if config.logging.verbose {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Info
-    };
+    if let Some(dir) = &config.path {
+        let path = expand_path(dir.to_path_buf()).join(timestamp);
 
-    if config.logging.save {
-        let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
-
-        let expanded_path = expand_path(&config.logging.path);
-        let templated_path = apply_template(&expanded_path, &timestamp);
-
-        if let Some(parent) = std::path::Path::new(&templated_path).parent() {
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        let log_file = File::create(&templated_path)
-            .with_context(|| format!("Failed to create log file {}", templated_path))?;
+        let log_file = fs::File::create(&path)
+            .with_context(|| format!("Failed to create log file {}", path.to_string_lossy()))?;
 
-        CombinedLogger::init(vec![
-            TermLogger::new(
-                log_level,
-                Config::default(),
-                TerminalMode::Mixed,
-                ColorChoice::Auto,
+        simplelog::CombinedLogger::init(vec![
+            simplelog::TermLogger::new(
+                config.level,
+                simplelog::Config::default(),
+                simplelog::TerminalMode::Mixed,
+                simplelog::ColorChoice::Auto,
             ),
-            WriteLogger::new(log_level, Config::default(), log_file),
+            simplelog::WriteLogger::new(config.level, simplelog::Config::default(), log_file),
         ])?;
     } else {
-        TermLogger::init(
-            log_level,
-            Config::default(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
+        simplelog::TermLogger::init(
+            config.level,
+            simplelog::Config::default(),
+            simplelog::TerminalMode::Mixed,
+            simplelog::ColorChoice::Auto,
         )?;
     }
 
     Ok(())
 }
 
-fn setup_gpio(config: &JobConfig) -> Result<GpioInputs> {
-    let gpio = Gpio::new()?;
+struct GpioInputs {
+    signal: gpio::InputPin,
+}
 
-    let signal = gpio.get(config.inputs.signal.pin)?.into_input_pullup();
+fn setup_gpio(config: &GpioConfig) -> Result<GpioInputs> {
+    let gpio = gpio::Gpio::new()?;
+
+    let signal = gpio.get(config.signal.pin)?.into_input_pullup();
 
     Ok(GpioInputs { signal })
 }
@@ -75,59 +66,63 @@ fn main() -> Result<()> {
         bail!("Usage: cnc-ctrl <path-to-job-config>".to_string());
     }
 
-    let config_path = &args[1];
-    let config = JobConfig::load(config_path)
-        .with_context(|| format!("Failed to load job configuration from {}", config_path))?;
+    let config = GeneralConfig::load().context("Failed to load config")?;
 
-    setup_logging(&config).context("Failed to setup logging")?;
+    let job_config_path = &args[1];
+    let job_config = JobConfig::load(job_config_path)
+        .with_context(|| format!("Failed to load job config from {}", job_config_path))?;
 
-    let connection = match config.connection {
-        ConnectionConfig::Tcp(tcp_config) => Connection::tcp(&tcp_config)?,
-        ConnectionConfig::Serial(serial_config) => unimplemented!(),
-    };
+    setup_logs(&config.logs).context("Failed to setup logging")?;
 
-    let mut gpio_inputs = setup_gpio(&config).context("Failed to setup GPIO pins")?;
+    let mut gpio_inputs = setup_gpio(&config.gpio).context("Failed to setup GPIO pins")?;
     gpio_inputs
         .signal
         .set_interrupt(
-            Trigger::RisingEdge,
-            Some(Duration::from_millis(config.inputs.signal.debounce_ms)),
+            gpio::Trigger::RisingEdge,
+            Some(time::Duration::from_millis(config.gpio.signal.debounce_ms)),
         )
         .context("Failed to set signal interrupt")?;
 
-    let alive = sync::Arc::new(atomic::AtomicBool::new(true));
+    let connection = match job_config.connection.kind {
+        ConnectionKind::Tcp(tcp_config) => Connection::tcp(&tcp_config)?.open()?,
+        ConnectionKind::Serial(serial_config) => Connection::serial(&serial_config)?.open()?,
+    };
 
-    let alive_clone = alive.clone();
+    let running = sync::Arc::new(atomic::AtomicBool::new(true));
+
+    let running_clone = running.clone();
     ctrlc::set_handler(move || {
-        warn!("Shutting down gracefully...");
-        alive_clone.store(false, atomic::Ordering::Relaxed);
+        warn!("Shutting down...");
+        running_clone.store(false, atomic::Ordering::Relaxed);
     })?;
 
-    while alive.load(atomic::Ordering::Relaxed) {
-        let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+    while running.load(atomic::Ordering::Relaxed) {
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
 
-        for (i, step) in config.steps.iter().enumerate() {
-            if i == 0 || step.should_wait() {
-                info!("Waiting for start signal...");
+        for (i, task_config) in job_config.tasks.iter().enumerate() {
+            let task: Box<dyn Task> = task_config.into();
+
+            if i == 0 || task_config.wait {
+                info!("Waiting for signal to proceed...");
                 gpio_inputs
                     .signal
                     .poll_interrupt(true, None)
                     .context("Failed to poll signal interrupt")?;
             }
 
-            info!("Executing step {} (timestamp: {})", i + 1, timestamp);
+            info!("Executing task {} (timestamp: {})", i + 1, timestamp);
 
-            let result = step.execute(&timestamp, &connection, &config);
+            let result = task.execute(&timestamp, running.clone(), &connection);
 
             match result {
-                Ok(()) => info!("Step {} completed successfully", i + 1),
+                Ok(()) => info!("Task {} completed successfully", i + 1),
                 Err(e) => {
-                    bail!("Step {} failed: {}", i + 1, e);
+                    bail!("Task {} failed: {}", i + 1, e);
                 }
             }
         }
 
-        info!("Sequence complete (timestamp: {})", timestamp);
+        info!("Job complete (timestamp: {})", timestamp);
     }
 
     Ok(())

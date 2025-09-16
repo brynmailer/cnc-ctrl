@@ -5,39 +5,34 @@ use std::collections::VecDeque;
 use std::io::{self, BufRead, Read, Write};
 use std::{net, thread, time};
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
-use crossbeam::channel::{self};
-use log::{error, info, warn};
+use anyhow::{Context, Result, anyhow, bail};
+use crossbeam::channel;
+use log::{debug, error, info, warn};
 
 use crate::config::{SerialConfig, TcpConfig};
 
-pub use self::command::Command;
-pub use self::message::Message;
+pub use self::command::{Command, Realtime};
+pub use self::message::{Message, Response};
 
-pub enum Connection<T: Device> {
-    Inactive(InactiveConnection<T>),
-    Active(ActiveConnection<T>),
-}
+const TIMEOUT_MS: u64 = 60000;
+
+pub struct Connection;
 
 pub struct InactiveConnection<T: Device> {
     device: T,
 }
 
-pub struct ActiveConnection<T: Device> {
-    device: T,
+pub struct ActiveConnection {
     pub sender: channel::Sender<(Command, Option<channel::Sender<Message>>)>,
-    pub receiver: channel::Receiver<Message>,
 }
 
-impl Connection<net::TcpStream> {
+impl Connection {
     pub fn tcp(config: &TcpConfig) -> Result<InactiveConnection<net::TcpStream>> {
         let device = (|| -> Result<net::TcpStream> {
             let stream = net::TcpStream::connect_timeout(
                 &(format!("{}:{}", config.address, config.port).parse()?),
-                time::Duration::from_secs(config.timeout),
+                time::Duration::from_millis(TIMEOUT_MS),
             )?;
-
-            stream.set_nonblocking(true)?;
 
             Ok(stream)
         })()
@@ -50,14 +45,12 @@ impl Connection<net::TcpStream> {
 
         Ok(InactiveConnection { device })
     }
-}
 
-impl Connection<Box<dyn serialport::SerialPort>> {
     pub fn serial(
         config: &SerialConfig,
     ) -> Result<InactiveConnection<Box<dyn serialport::SerialPort>>> {
         let device = serialport::new(config.port.clone(), config.baud_rate)
-            .timeout(time::Duration::from_secs(config.timeout))
+            .timeout(time::Duration::from_millis(TIMEOUT_MS))
             .open()
             .with_context(|| format!("Failed to open serial port {}", config.port))?;
 
@@ -66,144 +59,124 @@ impl Connection<Box<dyn serialport::SerialPort>> {
 }
 
 impl<T: Device> InactiveConnection<T> {
-    pub fn open(self) -> Result<ActiveConnection<T>> {
+    pub fn open(self) -> Result<ActiveConnection> {
         let mut writer = io::BufWriter::new(self.device.try_clone()?);
         let mut reader = io::BufReader::new(self.device.try_clone()?);
 
-        let (cmd_tx, cmd_rx) = channel::bounded(0);
-        let (msg_tx, msg_rx) = channel::unbounded();
-        let (res_tx, res_rx) = channel::unbounded::<Option<channel::Sender<Message>>>();
-
-        let send_handle = thread::spawn(move || {
-            let mut queued: VecDeque<Command> = VecDeque::new();
-            let mut sent: VecDeque<Command> = VecDeque::new();
-
-            loop {
-                match cmd_rx.recv() {
-                    Ok(cmd) => match cmd {
-                        Command::Realtime(_) => queued.push_front(cmd),
-                        Command::Block(..) => queued.push_back(cmd),
-                    },
-                    Err(channel::RecvError) => {
-                        break;
-                    }
-                }
-            }
-
-            let buffered_bytes = sent.iter().fold(0, |sum, cmd| match cmd {
-                Command::Block(block, _) => sum + (block.len() + 1),
-                Command::Realtime(..) => sum,
-            });
-
-            match queued.pop_front() {
-                Some(cmd) => {
-                    match cmd {
-                        Command::Block(ref block, ref sequence) => {
-                            if buffered_bytes + (block.len() + 1) < 1023 {
-                                if let Err(err) = write!(writer, "{}\n", block) {
-                                    error!(
-                                        "Failed to write command '{}' to connection: {}",
-                                        cmd, err
-                                    );
-                                    queued.push_front(cmd);
-                                } else {
-                                    if let Some(number) = sequence {
-                                        info!("SEND:{} > {}", number, cmd);
-                                    } else {
-                                        info!("SEND: > {}", cmd);
-                                    }
-
-                                    sent.push_back(cmd);
-                                }
-                            } else {
-                                queued.push_front(cmd);
-                            }
-                        }
-                        Command::Realtime(_) => {
-                            if let Err(err) = write!(writer, "{}", cmd) {
-                                error!("Failed to send command '{}': {}", cmd, err);
-                                queued.push_front(cmd);
-                            } else {
-                                info!("SEND > {}", cmd);
-                            }
-                        }
-                    }
-
-                    if let Err(err) = writer.flush() {
-                        error!("Failed to flush command buffer: {}", err);
-                        break;
-                    }
-                }
-                None => (),
-            }
-
-            warn!("Closed send worker");
-        });
+        let (cmd_tx, cmd_rx): (
+            channel::Sender<(Command, Option<channel::Sender<Message>>)>,
+            channel::Receiver<(Command, Option<channel::Sender<Message>>)>,
+        ) = channel::bounded(0);
 
         thread::spawn(move || {
-            let mut received = String::new();
+            let mut queued: VecDeque<(Command, Option<channel::Sender<Message>>)> = VecDeque::new();
+            let mut sent: VecDeque<(Command, Option<channel::Sender<Message>>)> = VecDeque::new();
 
-            loop {
-                match reader.read_line(&mut received) {
-                    Ok(0) => {
-                        warn!("EOF reached");
-                        break;
+            let mut receive =
+                |sent: &mut VecDeque<(Command, Option<channel::Sender<Message>>)>| -> Result<()> {
+                    let mut received = String::new();
+
+                    match reader.read_line(&mut received) {
+                        Ok(0) => {
+                            bail!("EOF reached");
+                        }
+                        Ok(_) => {
+                            let trimmed = received.trim();
+                            info!("    <RECV {}", Message::from(trimmed));
+
+                            if let Some((_, Some(msg_tx))) = sent.front() {
+                                if let Err(err) = msg_tx.send(Message::from(trimmed)) {
+                                    debug!("Failed to send message: {}", err);
+                                }
+                            }
+
+                            if let Message::Response(_) = Message::from(trimmed) {
+                                sent.pop_front();
+                            }
+
+                            Ok(())
+                        }
+                        Err(err) => {
+                            bail!("Failed to read data from connection: {}", err);
+                        }
                     }
-                    Ok(_) => {
-                        match Message::from(received.trim()) {
-                            Message::Response(_) => {}
-                            _ => result = (msg, None),
+                };
+
+            'main: loop {
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(cmd @ (Command::Realtime(_), _)) => {
+                            queued.push_front(cmd);
+                        }
+                        Ok(cmd @ (Command::Block(_), _)) => {
+                            queued.push_back(cmd);
+                        }
+                        Err(channel::TryRecvError::Empty) => break,
+                        Err(channel::TryRecvError::Disconnected) => {
+                            break 'main;
+                        }
+                    }
+                }
+
+                match queued.front() {
+                    Some((cmd @ Command::Realtime(byte), _)) => {
+                        if let Err(err) = writer.write(&[*byte as u8]) {
+                            error!("Failed to send '{}': {}", cmd, err);
+                            break;
                         }
 
-                        info!("{}", info);
-                        if let Err(channel::SendError(_)) = msg_tx.send(result) {
-                            warn!("Channel disconnected");
-                            break;
-                        };
+                        info!("SND> {}", cmd);
+                        queued.pop_front();
                     }
-                    Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => (),
-                    Err(err) => {
-                        error!("Failed to read data from connection: {}", err);
-                        break;
+                    Some((cmd @ Command::Block(block), _)) => {
+                        let buffered_bytes =
+                            sent.iter()
+                                .fold(block.len() + 1, |sum, (cmd, _)| match cmd {
+                                    Command::Block(block) => sum + block.len() + 1,
+                                    Command::Realtime(..) => sum,
+                                });
+
+                        if buffered_bytes < 1024 - 1 {
+                            if let Err(err) = write!(writer, "{}\n", block) {
+                                error!("Failed to send '{}': {}", cmd, err);
+                                break;
+                            }
+
+                            info!("SND> {}", cmd);
+                            sent.push_back(queued.pop_front().unwrap());
+                        }
+                    }
+                    None => {
+                        if let Err(err) = receive(&mut sent) {
+                            error!("{}", err);
+                            break;
+                        }
                     }
                 }
             }
 
-            warn!("Closed read worker");
+            warn!("Closed worker thread");
         });
 
-        Ok(ActiveConnection {
-            device: self.device,
-            sender: cmd_tx,
-            receiver: msg_rx,
-        })
+        Ok(ActiveConnection { sender: cmd_tx })
     }
 }
 
-impl<T: Device> ActiveConnection<T> {
-    pub fn stream(&self, cmds: Vec<Command>) -> Result<Vec<(usize, Message)>> {
-        let mut receivers = Vec::new();
+impl ActiveConnection {
+    pub fn send(&self, cmd: Command) -> Result<channel::Receiver<Message>> {
+        let (tx, rx) = channel::unbounded();
 
-        for cmd in cmds {
-            if let Command::Block(block) = cmd {
-                let (tx, rx) = channel::unbounded();
-                receivers.push(rx);
-                self.sender
-                    .send((Command::Block(block.clone()), Some(tx)))?;
-            }
-        }
+        self.sender.send((cmd, Some(tx)))?;
 
-        let mut responses = Vec::new();
-        for (index, rx) in receivers.iter().enumerate() {
-            responses.push((index, rx.recv()?));
-        }
-
-        Ok(responses)
+        Ok(rx)
     }
+}
 
-    pub fn close(self) -> InactiveConnection<T> {
-        InactiveConnection {
-            device: self.device,
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        warn!("Sending stop signal to Grbl");
+        if let Err(err) = self.send(Command::Realtime(Realtime::Stop)) {
+            error!("Failed to stop Grbl: {}", err);
         }
     }
 }

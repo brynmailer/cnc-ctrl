@@ -1,5 +1,6 @@
 use std::fmt;
 
+#[derive(Clone)]
 pub enum Command {
     Realtime(Realtime),
     Block(String),
@@ -23,5 +24,12 @@ impl fmt::Display for Command {
             Command::Realtime(cmd) => write!(f, "RT {:#x}", *cmd as u8),
             Command::Block(cmd) => write!(f, "{}", cmd),
         }
+    }
+}
+
+// TODO: Implement better parsing
+impl From<String> for Command {
+    fn from(value: String) -> Self {
+        Command::Block(value)
     }
 }

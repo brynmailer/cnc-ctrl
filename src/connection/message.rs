@@ -18,9 +18,6 @@ pub enum ParseError {
     RegExp,
 }
 
-#[derive(Error, Debug)]
-pub enum PushError {}
-
 pub enum Message {
     Response(Response),
     Push(Push),
@@ -45,6 +42,7 @@ pub struct Report {
 
 pub struct Feedback {
     pub kind: String,
+    pub data: String,
 }
 
 impl fmt::Display for Message {
@@ -134,6 +132,7 @@ impl TryFrom<&str> for Push {
 
                 let feedback = Feedback {
                     kind: parts[0].to_string(),
+                    data: parts[1].to_string(),
                 };
 
                 Ok(Push::Feedback(feedback, value.to_string()))

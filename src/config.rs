@@ -1,20 +1,88 @@
-use std::env;
+use std::path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use config::{Config, File};
 use serde::Deserialize;
+
+/* General */
+
+#[derive(Debug, Deserialize)]
+pub struct GeneralConfig {
+    pub logs: LogsConfig,
+    pub gpio: GpioConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogsConfig {
+    pub path: Option<path::PathBuf>,
+    pub level: log::LevelFilter,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GpioConfig {
+    pub signal: PinConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PinConfig {
+    pub pin: u8,
+    pub debounce_ms: u64,
+}
+
+impl GeneralConfig {
+    pub fn load() -> Result<Self> {
+        let path = dirs::config_dir()
+            .map(|dir| dir.join("cnc-ctrl").join("config.yml"))
+            .context("Failed to determine config directory")?;
+
+        if !path.exists() {
+            return Ok(GeneralConfig::default());
+        }
+
+        let file = Config::builder().add_source(File::from(path)).build()?;
+
+        Ok(file.try_deserialize()?)
+    }
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        let log_path = dirs::data_dir()
+            .map(|dir| dir.join("cnc-ctrl").join("config.yml"))
+            .or_else(|| dirs::home_dir());
+
+        Self {
+            logs: LogsConfig {
+                path: log_path,
+                level: log::LevelFilter::Info,
+            },
+            gpio: GpioConfig {
+                signal: PinConfig {
+                    pin: 17,
+                    debounce_ms: 30,
+                },
+            },
+        }
+    }
+}
+
+/* Per job */
 
 #[derive(Debug, Deserialize)]
 pub struct JobConfig {
     pub connection: ConnectionConfig,
-    pub logging: LoggingConfig,
-    pub inputs: InputsConfig,
-    pub steps: Vec<Step>,
+    pub tasks: Vec<TaskConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConnectionConfig {
+    #[serde(flatten)]
+    pub kind: ConnectionKind,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum ConnectionConfig {
+pub enum ConnectionKind {
     Tcp(TcpConfig),
     Serial(SerialConfig),
 }
@@ -23,96 +91,75 @@ pub enum ConnectionConfig {
 pub struct TcpConfig {
     pub address: String,
     pub port: u16,
-    pub timeout: u64,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SerialConfig {
     pub port: String,
     pub baud_rate: u32,
-    pub timeout: u64,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct LoggingConfig {
-    pub verbose: bool,
-    pub save: bool,
-    pub path: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GrblConfig {
-    pub rx_buffer_size_bytes: usize,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InputsConfig {
-    pub signal: InputPin,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InputPin {
-    pub pin: u8,
-    pub debounce_ms: u64,
+pub struct TaskConfig {
+    #[serde(flatten)]
+    pub kind: TaskKind,
+    pub wait: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum Step {
-    Gcode(GcodeStepConfig),
-    Bash(BashStepConfig),
+pub enum TaskKind {
+    Stream(StreamConfig),
+    Process(ProcessConfig),
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GcodeStepConfig {
-    pub path: String,
-    pub probe: Option<ProbeConfig>,
-    #[serde(default = "default_wait_for_signal")]
-    pub wait_for_signal: bool,
-    #[serde(default = "default_check")]
+pub struct StreamConfig {
+    pub path: path::PathBuf,
     pub check: bool,
+    pub output: Option<OutputConfig>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ProbeConfig {
-    pub save_path: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BashStepConfig {
+pub struct ProcessConfig {
     pub command: String,
-    #[serde(default)]
-    pub wait_for_signal: bool,
 }
 
-fn default_wait_for_signal() -> bool {
-    true
+#[derive(Debug, Deserialize)]
+pub struct OutputConfig {
+    pub kind: OutputKind,
+    pub path: path::PathBuf,
 }
 
-fn default_check() -> bool {
-    true
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum OutputKind {
+    #[serde(rename = "points")]
+    ProbedPoints,
 }
 
 impl JobConfig {
-    pub fn load(config_path: &str) -> Result<Self> {
-        let settings = Config::builder()
-            .add_source(File::with_name(config_path))
+    pub fn load(path: &str) -> Result<Self> {
+        let file = Config::builder()
+            .add_source(File::with_name(path))
             .build()?;
 
-        let config: JobConfig = settings.try_deserialize()?;
+        let config: JobConfig = file.try_deserialize()?;
 
         Ok(config)
     }
 }
 
-pub fn expand_path(path: &str) -> String {
-    if path.starts_with('~') {
-        if let Some(home_dir) = env::home_dir() {
-            let home_str = home_dir.to_string_lossy();
-            return path.replacen('~', &home_str, 1);
+pub fn expand_path(path: path::PathBuf) -> path::PathBuf {
+    if path.starts_with("~/") {
+        if let Some(expanded) = dirs::home_dir()
+            .map(|home| home.join(path.components().skip(1).collect::<path::PathBuf>()))
+        {
+            return expanded;
         }
     }
-    path.to_string()
+
+    path
 }
 
 pub fn apply_template(text: &str, timestamp: &str) -> String {
