@@ -47,9 +47,7 @@ impl GeneralConfig {
 
 impl Default for GeneralConfig {
     fn default() -> Self {
-        let log_path = dirs::data_dir()
-            .map(|dir| dir.join("cnc-ctrl").join("config.yml"))
-            .or_else(|| dirs::home_dir());
+        let log_path = dirs::data_dir().map(|dir| dir.join("cnc-ctrl").join("logs"));
 
         Self {
             logs: LogsConfig {

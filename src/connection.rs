@@ -3,6 +3,7 @@ pub mod message;
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Read, Write};
+use std::time::Duration;
 use std::{net, thread, time};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -19,24 +20,21 @@ const GRBL_RX_SIZE: usize = 1024;
 
 pub struct Connection;
 
-pub struct InactiveConnection<T: Device> {
-    device: T,
+pub struct InactiveConnection {
+    device: net::TcpStream,
 }
 
 pub struct ActiveConnection {
+    device: net::TcpStream,
     pub sender: channel::Sender<(Command, Option<channel::Sender<Message>>)>,
 }
 
 impl Connection {
-    pub fn tcp(config: &TcpConfig) -> Result<InactiveConnection<net::TcpStream>> {
-        let device = (|| -> Result<net::TcpStream> {
-            let stream = net::TcpStream::connect_timeout(
-                &(format!("{}:{}", config.address, config.port).parse()?),
-                time::Duration::from_millis(TIMEOUT_MS),
-            )?;
-
-            Ok(stream)
-        })()
+    pub fn new(config: &TcpConfig) -> Result<InactiveConnection> {
+        let device = net::TcpStream::connect_timeout(
+            &(format!("{}:{}", config.address, config.port).parse()?),
+            time::Duration::from_millis(TIMEOUT_MS),
+        )
         .with_context(|| {
             format!(
                 "Failed to create TCP connection to {}:{}",
@@ -46,20 +44,9 @@ impl Connection {
 
         Ok(InactiveConnection { device })
     }
-
-    pub fn serial(
-        config: &SerialConfig,
-    ) -> Result<InactiveConnection<Box<dyn serialport::SerialPort>>> {
-        let device = serialport::new(config.port.clone(), config.baud_rate)
-            .timeout(time::Duration::from_millis(TIMEOUT_MS))
-            .open()
-            .with_context(|| format!("Failed to open serial port {}", config.port))?;
-
-        Ok(InactiveConnection { device })
-    }
 }
 
-impl<T: Device> InactiveConnection<T> {
+impl InactiveConnection {
     pub fn open(self) -> Result<ActiveConnection> {
         let mut writer = io::BufWriter::new(self.device.try_clone()?);
         let mut reader = io::BufReader::new(self.device.try_clone()?);
@@ -113,9 +100,7 @@ impl<T: Device> InactiveConnection<T> {
                             queued.push_back(cmd);
                         }
                         Err(channel::TryRecvError::Empty) => break,
-                        Err(channel::TryRecvError::Disconnected) => {
-                            break 'main;
-                        }
+                        Err(channel::TryRecvError::Disconnected) => break 'main,
                     }
                 }
 
@@ -145,6 +130,11 @@ impl<T: Device> InactiveConnection<T> {
 
                             info!("SND> {}", cmd);
                             sent.push_back(queued.pop_front().unwrap());
+                        } else {
+                            if let Err(err) = receive(&mut sent) {
+                                error!("{}", err);
+                                break;
+                            }
                         }
                     }
                     None => {
@@ -159,7 +149,10 @@ impl<T: Device> InactiveConnection<T> {
             warn!("Closed worker thread");
         });
 
-        Ok(ActiveConnection { sender: cmd_tx })
+        Ok(ActiveConnection {
+            device: self.device,
+            sender: cmd_tx,
+        })
     }
 }
 
@@ -178,6 +171,11 @@ impl Drop for ActiveConnection {
         warn!("Sending stop signal to Grbl");
         if let Err(err) = self.send(Command::Realtime(Realtime::Stop)) {
             error!("Failed to stop Grbl: {}", err);
+        }
+
+        thread::sleep(Duration::from_millis(500));
+        if let Err(err) = self.device.shutdown(net::Shutdown::Both) {
+            error!("Failed to shut down device: {}", err);
         }
     }
 }
