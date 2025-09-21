@@ -1,13 +1,13 @@
 use std::fmt;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Command {
     Realtime(Realtime),
     Block(String),
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Realtime {
     Reset = 0x18,
     Stop = 0x19,

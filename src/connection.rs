@@ -42,6 +42,8 @@ impl Connection {
             )
         })?;
 
+        device.set_nonblocking(true)?;
+
         Ok(InactiveConnection { device })
     }
 }
@@ -51,14 +53,11 @@ impl InactiveConnection {
         let mut writer = io::BufWriter::new(self.device.try_clone()?);
         let mut reader = io::BufReader::new(self.device.try_clone()?);
 
-        let (cmd_tx, cmd_rx): (
-            channel::Sender<(Command, Option<channel::Sender<Message>>)>,
-            channel::Receiver<(Command, Option<channel::Sender<Message>>)>,
-        ) = channel::bounded(0);
+        let (cmd_tx, cmd_rx) = channel::bounded::<(Command, Option<channel::Sender<Message>>)>(0);
 
         thread::spawn(move || {
             let mut queued: VecDeque<(Command, Option<channel::Sender<Message>>)> = VecDeque::new();
-            let mut sent: VecDeque<(Command, Option<channel::Sender<Message>>)> = VecDeque::new();
+            let mut sent = queued.clone();
 
             let mut receive =
                 |sent: &mut VecDeque<(Command, Option<channel::Sender<Message>>)>| -> Result<()> {
@@ -84,60 +83,58 @@ impl InactiveConnection {
 
                             Ok(())
                         }
+                        Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(()),
                         Err(err) => {
                             bail!("Failed to read data from connection: {}", err);
                         }
                     }
                 };
 
-            'main: loop {
-                loop {
-                    match cmd_rx.try_recv() {
-                        Ok(cmd @ (Command::Realtime(_), _)) => {
-                            queued.push_front(cmd);
-                        }
-                        Ok(cmd @ (Command::Block(_), _)) => {
-                            queued.push_back(cmd);
-                        }
-                        Err(channel::TryRecvError::Empty) => break,
-                        Err(channel::TryRecvError::Disconnected) => break 'main,
-                    }
-                }
+            loop {
+                let buffered_bytes = sent.iter().fold(0, |sum, (cmd, _)| match cmd {
+                    Command::Block(block) => sum + block.len() + 1,
+                    Command::Realtime(_) => sum,
+                });
+
+                cmd_rx.try_iter().for_each(|cmd| match cmd {
+                    (Command::Block(_), _) => queued.push_back(cmd),
+                    (Command::Realtime(_), _) => queued.push_front(cmd),
+                });
 
                 match queued.front() {
                     Some((cmd @ Command::Realtime(byte), _)) => {
+                        info!("SND> {}", cmd);
+
                         if let Err(err) = writer.write(&[*byte as u8]) {
-                            error!("Failed to send '{}': {}", cmd, err);
+                            error!("{}", err);
                             break;
                         }
 
-                        info!("SND> {}", cmd);
+                        if let Err(err) = writer.flush() {
+                            error!("{}", err);
+                            break;
+                        }
+
                         queued.pop_front();
                     }
-                    Some((cmd @ Command::Block(block), _)) => {
-                        let buffered_bytes =
-                            sent.iter()
-                                .fold(block.len() + 1, |sum, (cmd, _)| match cmd {
-                                    Command::Block(block) => sum + block.len() + 1,
-                                    Command::Realtime(..) => sum,
-                                });
+                    Some((cmd @ Command::Block(block), _))
+                        if buffered_bytes + block.len() + 1 < GRBL_RX_SIZE =>
+                    {
+                        info!("SND> {}", cmd);
 
-                        if buffered_bytes < GRBL_RX_SIZE - 1 {
-                            if let Err(err) = write!(writer, "{}\n", block) {
-                                error!("Failed to send '{}': {}", cmd, err);
-                                break;
-                            }
-
-                            info!("SND> {}", cmd);
-                            sent.push_back(queued.pop_front().unwrap());
-                        } else {
-                            if let Err(err) = receive(&mut sent) {
-                                error!("{}", err);
-                                break;
-                            }
+                        if let Err(err) = write!(writer, "{}\n", block) {
+                            error!("{}", err);
+                            break;
                         }
+
+                        if let Err(err) = writer.flush() {
+                            error!("{}", err);
+                            break;
+                        }
+
+                        sent.push_back(queued.pop_front().unwrap());
                     }
-                    None => {
+                    _ => {
                         if let Err(err) = receive(&mut sent) {
                             error!("{}", err);
                             break;
@@ -146,7 +143,7 @@ impl InactiveConnection {
                 }
             }
 
-            warn!("Closed worker thread");
+            info!("Connection worker exited");
         });
 
         Ok(ActiveConnection {
@@ -180,6 +177,7 @@ impl Drop for ActiveConnection {
     }
 }
 
+/*
 pub trait Device: Read + Write + Send + 'static {
     fn id(&self) -> Result<String>;
 
@@ -214,3 +212,4 @@ impl Device for Box<dyn serialport::SerialPort> {
         Ok(self.as_ref().try_clone()?)
     }
 }
+*/
