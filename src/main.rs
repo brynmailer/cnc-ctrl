@@ -3,7 +3,7 @@ mod connection;
 mod task;
 
 use std::sync::atomic;
-use std::{fs, sync, time};
+use std::{fs, time};
 
 use anyhow::{Context, Result, bail};
 use log::{info, warn};
@@ -12,6 +12,8 @@ use rppal::gpio;
 use config::{ConnectionKind, GeneralConfig, GpioConfig, JobConfig, LogsConfig, expand_path};
 use connection::Connection;
 use task::Task;
+
+static RUNNING: atomic::AtomicBool = atomic::AtomicBool::new(true);
 
 fn setup_logs(config: &LogsConfig) -> Result<()> {
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
@@ -85,15 +87,12 @@ fn main() -> Result<()> {
         ConnectionKind::Serial(_) => unimplemented!(),
     };
 
-    let running = sync::Arc::new(atomic::AtomicBool::new(true));
-
-    let running_clone = running.clone();
     ctrlc::set_handler(move || {
         warn!("Shutting down...");
-        running_clone.store(false, atomic::Ordering::Relaxed);
+        RUNNING.store(false, atomic::Ordering::Relaxed);
     })?;
 
-    while running.load(atomic::Ordering::Relaxed) {
+    while RUNNING.load(atomic::Ordering::Relaxed) {
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
 
         for (i, task_config) in job_config.tasks.iter().enumerate() {
@@ -109,7 +108,7 @@ fn main() -> Result<()> {
 
             info!("Executing task {} (timestamp: {})", i + 1, timestamp);
 
-            let result = task.execute(&timestamp, running.clone(), &connection);
+            let result = task.execute(&timestamp, &RUNNING, &connection);
 
             match result {
                 Ok(()) => info!("Task {} completed successfully", i + 1),

@@ -1,6 +1,6 @@
 use std::io::{BufRead, Write};
 use std::sync::atomic;
-use std::{fs, io, path, process, sync};
+use std::{fs, io, path, process};
 
 use anyhow::{Context, Result, anyhow, bail};
 use crossbeam::channel;
@@ -17,7 +17,7 @@ pub trait Task {
     fn execute(
         &self,
         timestamp: &str,
-        running: sync::Arc<atomic::AtomicBool>,
+        running: &atomic::AtomicBool,
         connection: &ActiveConnection,
     ) -> Result<()>;
 }
@@ -47,7 +47,7 @@ impl<'a> Task for Stream<'a> {
     fn execute(
         &self,
         timestamp: &str,
-        running: sync::Arc<atomic::AtomicBool>,
+        running: &atomic::AtomicBool,
         connection: &ActiveConnection,
     ) -> Result<()> {
         let path = expand_path(
@@ -80,7 +80,7 @@ impl<'a> Task for Stream<'a> {
                         if !running.load(atomic::Ordering::Relaxed) {
                             bail!("Stopped streaming early");
                         }
-                        Ok(receivers.push(connection.send(cmd.clone())?))
+                        Ok(receivers.push(connection.send(cmd.clone(), Some(running))?))
                     }
                     Command::Realtime(_) => Ok(()),
                 }
@@ -97,7 +97,9 @@ impl<'a> Task for Stream<'a> {
 
             // May need to implement further logic when enabling/disabling check mode to ensure
             // that Grbl is in the correct state. ie check parser state beforehand.
-            connection.send(Command::Block("$C".to_string()))?.recv()?;
+            connection
+                .send(Command::Block("$C".to_string()), Some(running))?
+                .recv()?;
 
             // Potential issue here with the reported line number. Will be incorrect if Grbl
             // responds with anything more than a single 'ok' or 'error:{code}', as the responses
@@ -111,7 +113,9 @@ impl<'a> Task for Stream<'a> {
                 })
                 .collect();
 
-            connection.send(Command::Block("$C".to_string()))?.recv()?;
+            connection
+                .send(Command::Block("$C".to_string()), Some(running))?
+                .recv()?;
 
             if errors.len() > 0 {
                 bail!(
@@ -184,7 +188,7 @@ impl<'a> Task for Stream<'a> {
 
         info!("Streaming complete! Waiting for execution to finish before proceeding...");
         connection
-            .send(Command::Block("G4 P0.5".to_string()))?
+            .send(Command::Block("G4 P0.5".to_string()), Some(running))?
             .recv()?;
         info!("G-code finished executing");
 
@@ -193,12 +197,7 @@ impl<'a> Task for Stream<'a> {
 }
 
 impl<'a> Task for Process<'a> {
-    fn execute(
-        &self,
-        timestamp: &str,
-        _: sync::Arc<atomic::AtomicBool>,
-        _: &ActiveConnection,
-    ) -> Result<()> {
+    fn execute(&self, timestamp: &str, _: &atomic::AtomicBool, _: &ActiveConnection) -> Result<()> {
         let cmd = apply_template(&self.config.command, timestamp);
 
         let output = process::Command::new("sh")

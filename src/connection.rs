@@ -3,9 +3,10 @@ pub mod message;
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
+use std::sync::atomic;
 use std::{net, thread, time};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use crossbeam::channel;
 use log::{debug, error, info};
 
@@ -158,10 +159,29 @@ impl InactiveConnection {
 }
 
 impl ActiveConnection {
-    pub fn send(&self, cmd: Command) -> Result<channel::Receiver<Message>> {
+    pub fn send(
+        &self,
+        cmd: Command,
+        running: Option<&atomic::AtomicBool>,
+    ) -> Result<channel::Receiver<Message>> {
         let (tx, rx) = channel::unbounded();
 
-        self.tx.send((cmd, Some(tx)))?;
+        if let Some(running) = running {
+            while running.load(atomic::Ordering::Relaxed) {
+                match self.tx.try_send((cmd.clone(), Some(tx.clone()))) {
+                    Ok(_) => (),
+                    Err(channel::TrySendError::Full(_)) => {
+                        // Sleep to avoid busy loop
+                        thread::sleep(time::Duration::from_millis(1));
+                    }
+                    Err(channel::TrySendError::Disconnected((val, _))) => {
+                        bail!("Failed to send command '{}'", val);
+                    }
+                }
+            }
+        } else {
+            self.tx.send((cmd, Some(tx)))?;
+        }
 
         Ok(rx)
     }
@@ -169,7 +189,7 @@ impl ActiveConnection {
 
 impl Drop for ActiveConnection {
     fn drop(&mut self) {
-        if let Err(err) = self.send(Command::Realtime(Realtime::Stop)) {
+        if let Err(err) = self.send(Command::Realtime(Realtime::Stop), None) {
             error!("Failed to stop Grbl: {}", err);
         }
 
