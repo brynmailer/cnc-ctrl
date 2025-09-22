@@ -3,12 +3,11 @@ pub mod message;
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
-use std::time::Duration;
 use std::{net, thread, time};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use crossbeam::channel;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 use crate::config::TcpConfig;
 
@@ -27,7 +26,7 @@ pub struct InactiveConnection {
 pub struct ActiveConnection {
     device: net::TcpStream,
     worker_handle: Option<thread::JoinHandle<()>>,
-    pub sender: channel::Sender<(Command, Option<channel::Sender<Message>>)>,
+    pub tx: channel::Sender<(Command, Option<channel::Sender<Message>>)>,
 }
 
 impl Connection {
@@ -88,7 +87,8 @@ impl InactiveConnection {
                     }
                     Some((cmd @ Command::Block(block), _))
                     // Have to do this here so that the match case falls through to receiving
-                    // if the 
+                    // if the grbl rx buffer is full, without having to calculate the currently
+                    // occupied space in the buffer every worker cycle
                         if sent
                             .iter()
                             .fold(block.len() + 1, |sum, (cmd, _)| match cmd {
@@ -119,11 +119,11 @@ impl InactiveConnection {
                             Ok(_) => {
                                 sleeping = false;
                                 let trimmed = received.trim();
-                                info!("    <RECV {}", Message::from(trimmed));
+                                info!("    <RECV {:?}", trimmed);
 
                                 if let Some((_, Some(msg_tx))) = sent.front() {
                                     if let Err(err) = msg_tx.send(Message::from(trimmed)) {
-                                        debug!("Failed to send message: {}", err);
+                                        debug!("Failed to send message to command issuer: {}", err);
                                     }
                                 }
 
@@ -131,7 +131,7 @@ impl InactiveConnection {
                                     sent.pop_front();
                                 }
                             }
-                            Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
+                            Err(err) if err.kind() == io::ErrorKind::WouldBlock => (),
                             Err(err) => {
                                 error!("Failed to read data from connection: {}", err);
                                 break;
@@ -140,7 +140,7 @@ impl InactiveConnection {
                     }
                 }
 
-                // Sleep during periods of low/no activity to prevent busy waiting unnecessarily
+                // Sleep during periods of low/no activity to avoid busy waiting unnecessarily
                 if sleeping {
                     thread::sleep(time::Duration::from_millis(1));
                 }
@@ -152,7 +152,7 @@ impl InactiveConnection {
         Ok(ActiveConnection {
             device: self.device,
             worker_handle: Some(handle),
-            sender: cmd_tx,
+            tx: cmd_tx,
         })
     }
 }
@@ -161,7 +161,7 @@ impl ActiveConnection {
     pub fn send(&self, cmd: Command) -> Result<channel::Receiver<Message>> {
         let (tx, rx) = channel::unbounded();
 
-        self.sender.send((cmd, Some(tx)))?;
+        self.tx.send((cmd, Some(tx)))?;
 
         Ok(rx)
     }
