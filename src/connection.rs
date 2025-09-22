@@ -2,15 +2,15 @@ pub mod command;
 pub mod message;
 
 use std::collections::VecDeque;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Write};
 use std::time::Duration;
 use std::{net, thread, time};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use crossbeam::channel;
 use log::{debug, error, info, warn};
 
-use crate::config::{SerialConfig, TcpConfig};
+use crate::config::TcpConfig;
 
 pub use self::command::{Command, Realtime};
 pub use self::message::{Message, Response};
@@ -26,6 +26,7 @@ pub struct InactiveConnection {
 
 pub struct ActiveConnection {
     device: net::TcpStream,
+    worker_handle: Option<thread::JoinHandle<()>>,
     pub sender: channel::Sender<(Command, Option<channel::Sender<Message>>)>,
 }
 
@@ -55,46 +56,13 @@ impl InactiveConnection {
 
         let (cmd_tx, cmd_rx) = channel::bounded::<(Command, Option<channel::Sender<Message>>)>(0);
 
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             let mut queued: VecDeque<(Command, Option<channel::Sender<Message>>)> = VecDeque::new();
             let mut sent = queued.clone();
 
-            let mut receive =
-                |sent: &mut VecDeque<(Command, Option<channel::Sender<Message>>)>| -> Result<()> {
-                    let mut received = String::new();
-
-                    match reader.read_line(&mut received) {
-                        Ok(0) => {
-                            bail!("EOF reached");
-                        }
-                        Ok(_) => {
-                            let trimmed = received.trim();
-                            info!("    <RECV {}", Message::from(trimmed));
-
-                            if let Some((_, Some(msg_tx))) = sent.front() {
-                                if let Err(err) = msg_tx.send(Message::from(trimmed)) {
-                                    debug!("Failed to send message: {}", err);
-                                }
-                            }
-
-                            if let Message::Response(_) = Message::from(trimmed) {
-                                sent.pop_front();
-                            }
-
-                            Ok(())
-                        }
-                        Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(()),
-                        Err(err) => {
-                            bail!("Failed to read data from connection: {}", err);
-                        }
-                    }
-                };
-
             loop {
-                let buffered_bytes = sent.iter().fold(0, |sum, (cmd, _)| match cmd {
-                    Command::Block(block) => sum + block.len() + 1,
-                    Command::Realtime(_) => sum,
-                });
+                #[allow(unused_assignments)]
+                let mut sleeping = true;
 
                 cmd_rx.try_iter().for_each(|cmd| match cmd {
                     (Command::Block(_), _) => queued.push_back(cmd),
@@ -103,6 +71,7 @@ impl InactiveConnection {
 
                 match queued.front() {
                     Some((cmd @ Command::Realtime(byte), _)) => {
+                        sleeping = false;
                         info!("SND> {}", cmd);
 
                         if let Err(err) = writer.write(&[*byte as u8]) {
@@ -118,8 +87,17 @@ impl InactiveConnection {
                         queued.pop_front();
                     }
                     Some((cmd @ Command::Block(block), _))
-                        if buffered_bytes + block.len() + 1 < GRBL_RX_SIZE =>
+                    // Have to do this here so that the match case falls through to receiving
+                    // if the 
+                        if sent
+                            .iter()
+                            .fold(block.len() + 1, |sum, (cmd, _)| match cmd {
+                                Command::Block(block) => sum + block.len() + 1,
+                                Command::Realtime(_) => sum,
+                            })
+                            < GRBL_RX_SIZE =>
                     {
+                        sleeping = false;
                         info!("SND> {}", cmd);
 
                         if let Err(err) = write!(writer, "{}\n", block) {
@@ -135,11 +113,36 @@ impl InactiveConnection {
                         sent.push_back(queued.pop_front().unwrap());
                     }
                     _ => {
-                        if let Err(err) = receive(&mut sent) {
-                            error!("{}", err);
-                            break;
+                        let mut received = String::new();
+                        match reader.read_line(&mut received) {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                sleeping = false;
+                                let trimmed = received.trim();
+                                info!("    <RECV {}", Message::from(trimmed));
+
+                                if let Some((_, Some(msg_tx))) = sent.front() {
+                                    if let Err(err) = msg_tx.send(Message::from(trimmed)) {
+                                        debug!("Failed to send message: {}", err);
+                                    }
+                                }
+
+                                if let Message::Response(_) = Message::from(trimmed) {
+                                    sent.pop_front();
+                                }
+                            }
+                            Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
+                            Err(err) => {
+                                error!("Failed to read data from connection: {}", err);
+                                break;
+                            }
                         }
                     }
+                }
+
+                // Sleep during periods of low/no activity to prevent busy waiting unnecessarily
+                if sleeping {
+                    thread::sleep(time::Duration::from_millis(1));
                 }
             }
 
@@ -148,6 +151,7 @@ impl InactiveConnection {
 
         Ok(ActiveConnection {
             device: self.device,
+            worker_handle: Some(handle),
             sender: cmd_tx,
         })
     }
@@ -165,14 +169,18 @@ impl ActiveConnection {
 
 impl Drop for ActiveConnection {
     fn drop(&mut self) {
-        warn!("Sending stop signal to Grbl");
         if let Err(err) = self.send(Command::Realtime(Realtime::Stop)) {
             error!("Failed to stop Grbl: {}", err);
         }
 
-        thread::sleep(Duration::from_millis(500));
         if let Err(err) = self.device.shutdown(net::Shutdown::Both) {
-            error!("Failed to shut down device: {}", err);
+            error!("Failed to shut down connection: {}", err);
+        }
+
+        if let Some(handle) = self.worker_handle.take() {
+            if let Err(_) = handle.join() {
+                error!("Failed to wait for connection worker to exit");
+            }
         }
     }
 }
