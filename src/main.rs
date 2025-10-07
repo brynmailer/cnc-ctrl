@@ -46,6 +46,7 @@ fn setup_logs(config: &LogsConfig) -> Result<()> {
     Ok(())
 }
 
+/*
 struct GpioInputs {
     signal: gpio::InputPin,
 }
@@ -57,6 +58,7 @@ fn setup_gpio(config: &GpioConfig) -> Result<GpioInputs> {
 
     Ok(GpioInputs { signal })
 }
+*/
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -73,6 +75,7 @@ fn main() -> Result<()> {
 
     setup_logs(&config.logs).context("Failed to setup logging")?;
 
+    /*
     let mut gpio_inputs = setup_gpio(&config.gpio).context("Failed to setup GPIO pins")?;
     gpio_inputs
         .signal
@@ -81,6 +84,7 @@ fn main() -> Result<()> {
             Some(time::Duration::from_millis(config.gpio.signal.debounce_ms)),
         )
         .context("Failed to set signal interrupt")?;
+    */
 
     let connection = match job_config.connection.kind {
         ConnectionKind::Tcp(tcp_config) => Connection::new(&tcp_config)?.open()?,
@@ -98,6 +102,7 @@ fn main() -> Result<()> {
         for (i, task_config) in job_config.tasks.iter().enumerate() {
             let task: Box<dyn Task> = task_config.into();
 
+            /*
             if i == 0 || task_config.wait {
                 info!("Waiting for signal to proceed...");
                 gpio_inputs
@@ -105,6 +110,7 @@ fn main() -> Result<()> {
                     .poll_interrupt(true, None)
                     .context("Failed to poll signal interrupt")?;
             }
+            */
 
             info!("Executing task {} (timestamp: {})", i + 1, timestamp);
 

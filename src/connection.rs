@@ -116,11 +116,15 @@ impl InactiveConnection {
                     _ => {
                         let mut received = String::new();
                         match reader.read_line(&mut received) {
-                            Ok(0) => break,
+                            Ok(0) => {
+                                error!("EOF reached");
+                                break;
+                            },
                             Ok(_) => {
                                 sleeping = false;
                                 let trimmed = received.trim();
                                 info!("    <RECV {:?}", trimmed);
+
 
                                 if let Some((_, Some(msg_tx))) = sent.front() {
                                     if let Err(err) = msg_tx.send(Message::from(trimmed)) {
@@ -168,13 +172,13 @@ impl ActiveConnection {
 
         if let Some(running) = running {
             while running.load(atomic::Ordering::Relaxed) {
-                match self.tx.try_send((cmd.clone(), Some(tx.clone()))) {
-                    Ok(_) => (),
-                    Err(channel::TrySendError::Full(_)) => {
-                        // Sleep to avoid busy loop
-                        thread::sleep(time::Duration::from_millis(1));
-                    }
-                    Err(channel::TrySendError::Disconnected((val, _))) => {
+                match self.tx.send_timeout(
+                    (cmd.clone(), Some(tx.clone())),
+                    time::Duration::from_millis(10),
+                ) {
+                    Ok(_) => break,
+                    Err(channel::SendTimeoutError::Timeout(_)) => (),
+                    Err(channel::SendTimeoutError::Disconnected((val, _))) => {
                         bail!("Failed to send command '{}'", val);
                     }
                 }
